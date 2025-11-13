@@ -8,7 +8,11 @@
     "dev": "nodemon server.js",
     "seed:jobs": "node src/seed/jobs.js",
     "seed:resources": "node src/seed/resources.js",
-    "seed:all": "node src/seed/jobs.js && node src/seed/resources.js"
+    "seed:all": "node src/seed/jobs.js && node src/seed/resources.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:verbose": "jest --verbose"
   },
   "keywords": [
     "express",
@@ -21,15 +25,19 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "mongoose": "^7.5.0",
-    "jsonwebtoken": "^9.0.2",
+    "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "cors": "^2.8.5"
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^7.5.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "@types/jest": "^30.0.0",
+    "jest": "^30.2.0",
+    "mongodb-memory-server": "^10.3.0",
+    "nodemon": "^3.0.1",
+    "supertest": "^7.1.4"
   }
 }
-
