@@ -29,6 +29,15 @@ const register = async (req, res, next) => {
       });
     }
 
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address',
+      });
+    }
+
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
@@ -86,6 +95,15 @@ const login = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: 'Please provide email and password',
+      });
+    }
+
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address',
       });
     }
 
