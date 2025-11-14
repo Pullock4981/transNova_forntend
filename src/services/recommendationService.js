@@ -37,12 +37,21 @@ const getJobRecommendations = async (userId) => {
 
         // Only recommend if at least one skill matches
         if (matchedSkills.length > 0) {
+          // Calculate base match score
+          let matchScore = matchedSkills.length / job.requiredSkills.length;
+          
+          // Boost score if job track matches user's preferred track
+          if (user.preferredTrack && job.track && 
+              user.preferredTrack.toLowerCase() === job.track.toLowerCase()) {
+            matchScore += 0.2; // Boost by 20% for track match
+          }
+          
           return {
             jobId: job._id,
             job: job,
             matchedSkills,
             missingSkills,
-            matchScore: matchedSkills.length / job.requiredSkills.length,
+            matchScore: Math.min(matchScore, 1.0), // Cap at 1.0
           };
         }
 

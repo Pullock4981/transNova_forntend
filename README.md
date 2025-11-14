@@ -10,6 +10,7 @@ A complete backend API for a youth-oriented job discovery and skill-development 
 - **Mongoose** - MongoDB object modeling
 - **JWT (jsonwebtoken)** - Authentication tokens
 - **bcryptjs** - Password hashing
+- **nodemailer** - Email sending for contact form
 - **dotenv** - Environment variable management
 - **CORS** - Cross-origin resource sharing
 - **Nodemon** - Development server (dev only)
@@ -58,9 +59,16 @@ server.js          # Server entry point
    JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
    JWT_EXPIRE=30d
    PORT=5000
+   
+   # Email Configuration (for contact form)
+   EMAIL_SERVICE=gmail
+   EMAIL_USER=your-email@gmail.com
+   EMAIL_PASSWORD=your-app-specific-password
    ```
 
-   **Note:** `JWT_SECRET` should be a long, random string. Use a strong secret in production!
+   **Note:** 
+   - `JWT_SECRET` should be a long, random string. Use a strong secret in production!
+   - For Gmail, you'll need to use an [App Password](https://support.google.com/accounts/answer/185833) instead of your regular password. Enable 2-Step Verification first, then generate an App Password.
 
 4. **Run the server**
 
@@ -160,6 +168,12 @@ Authorization: Bearer <jwt-token>
 ### Dashboard Route (Protected)
 
 - `GET /api/dashboard` - Get combined dashboard data (profile, recommendations, saved items)
+
+### Contact Route (Public)
+
+- `POST /api/contact/send` - Send contact form message via email
+  - Body: `{ name: String, email: String, subject: String, message: String }`
+  - Sends email to configured recipient addresses (shafinahnam89@gmail.com, ashikpullock99@gmail.com)
 
 ### Health Check
 

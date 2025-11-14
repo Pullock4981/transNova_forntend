@@ -57,7 +57,23 @@ const updateUserProfile = async (req, res, next) => {
     if (educationLevel !== undefined) user.educationLevel = educationLevel;
     if (experienceLevel) user.experienceLevel = experienceLevel;
     if (preferredTrack !== undefined) user.preferredTrack = preferredTrack;
-    if (experiences) user.experiences = experiences;
+    if (experiences !== undefined) {
+      // Validate experiences is an array of strings (can be JSON strings for structured data)
+      if (!Array.isArray(experiences)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Experiences must be an array',
+        });
+      }
+      // Ensure all items are strings
+      if (!experiences.every((exp) => typeof exp === 'string')) {
+        return res.status(400).json({
+          success: false,
+          message: 'All experience entries must be strings',
+        });
+      }
+      user.experiences = experiences;
+    }
     if (careerInterests) user.careerInterests = careerInterests;
     if (cvText !== undefined) user.cvText = cvText;
 
