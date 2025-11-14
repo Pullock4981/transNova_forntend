@@ -1,116 +1,109 @@
 const aiService = require('./aiService');
-const chromaService = require('./chromaService');
+const jobMatchPercentageAgent = require('../agents/jobMatchPercentageAgent');
 
 /**
  * AI-Powered Job Matching Service
- * Uses Gemini API to intelligently analyze job matches and generate:
- * - Match percentage
- * - Key reasons for match/mismatch
- * - Application platform recommendations
+ * Orchestrates the job matching process using the AI Agent
+ * Separated from AI Agent for better maintainability
  */
 class AIJobMatchingService {
+
   /**
-   * Analyze a single job match using AI
+   * Analyze job match using AI Agent
+   * Orchestrates the matching process: embedding, similarity calculation, and result generation
+   * 
    * @param {Object} user - User profile
    * @param {Object} job - Job details
+   * @param {Object} options - Options: { skipEmbedding: boolean, skipAIReasons: boolean }
    * @returns {Object} Match analysis with percentage, reasons, and platforms
    */
-  async analyzeJobMatch(user, job) {
+  async analyzeJobMatch(user, job, options = {}) {
+    const { skipEmbedding = false, skipAIReasons = false } = options;
+    
     try {
-      // First, do exact skill matching
-      const exactMatchedSkills = user.skills.filter((userSkill) =>
-        job.requiredSkills.some(
-          (jobSkill) => userSkill.toLowerCase() === jobSkill.toLowerCase()
-        )
-      );
+      console.log(`\n🤖 Job Match Percentage Agent: Starting match analysis`);
+      console.log(`   Job: ${job.title} at ${job.company}`);
+      console.log(`   User: ${user.fullName || user.email || user._id}\n`);
 
-      // Find missing skills
-      const missingSkills = job.requiredSkills.filter(
-        (jobSkill) =>
-          !exactMatchedSkills.some(
-            (matchedSkill) => matchedSkill.toLowerCase() === jobSkill.toLowerCase()
-          )
-      );
+      // Skip embedding if already done (to avoid duplicates and save time)
+      if (!skipEmbedding) {
+        // Step 1: Embed job details (MUST be done first)
+        console.log(`📌 Step 1: Embedding job details...`);
+        const jobEmbedded = await jobMatchPercentageAgent.embedJob(job);
+        if (!jobEmbedded) {
+          console.warn('⚠️  Job embedding failed, using fallback matching');
+        }
 
-      // Only analyze if there's at least one match
-      if (exactMatchedSkills.length === 0) {
+        // Step 2: Embed user profile (MUST be done second)
+        console.log(`📌 Step 2: Embedding user profile...`);
+        const userEmbedded = await jobMatchPercentageAgent.embedUser(user);
+        if (!userEmbedded) {
+          console.warn('⚠️  User embedding failed, using fallback matching');
+        }
+
+        // Wait for embeddings to be processed by ChromaDB
+        console.log(`⏳ Waiting for embeddings to be processed...`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } else {
+        console.log(`⏭️  Skipping embedding (already done)`);
+        // Still wait a bit for embeddings to be ready
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      // Step 3: Calculate similarity using embeddings (MUST be done after embedding)
+      console.log(`📌 Step 3: Calculating similarity using embeddings...`);
+      let similarityScore = await jobMatchPercentageAgent.calculateSimilarity(user, job);
+      
+      if (similarityScore > 0) {
+        console.log(`✅ Embedding-based similarity: ${Math.round(similarityScore * 100)}%`);
+      } else {
+        console.warn('⚠️  No embedding similarity found, using fallback calculation');
+      }
+
+      // Step 4: Extract matched and missing skills using Job Match Percentage Agent
+      let { matchedSkills, missingSkills } = jobMatchPercentageAgent.extractSkills(user, job);
+
+      // Fallback: Calculate exact skill matches if similarity is 0
+      if (similarityScore === 0) {
+        // Calculate base similarity from skill overlap
+        if (job.requiredSkills && job.requiredSkills.length > 0) {
+          similarityScore = matchedSkills.length / job.requiredSkills.length;
+        }
+      }
+
+      // Only return if there's at least one match
+      if (matchedSkills.length === 0 && similarityScore < 0.1) {
         return null;
       }
 
-      // Prepare context for AI analysis
-      const userContext = {
-        skills: user.skills || [],
-        experienceLevel: user.experienceLevel || 'Fresher',
-        preferredTrack: user.preferredTrack || '',
-        careerInterests: user.careerInterests || [],
-        educationLevel: user.educationLevel || '',
-      };
-
-      const jobContext = {
-        title: job.title,
-        company: job.company,
-        requiredSkills: job.requiredSkills || [],
-        experienceLevel: job.experienceLevel,
-        track: job.track,
-        jobType: job.jobType,
-        location: job.location,
-      };
-
-      // Use AI to analyze the match
-      const aiAnalysis = await this.getAIMatchAnalysis(
-        userContext,
-        jobContext,
-        exactMatchedSkills,
-        missingSkills
-      );
-
-      // Calculate base match score from skills
-      const baseScore = exactMatchedSkills.length / (job.requiredSkills.length || 1);
+      // Step 5: Calculate match percentage using Job Match Percentage Agent (MUST be done after embedding)
+      console.log(`📌 Step 5: Calculating match percentage from embeddings...`);
+      const matchPercentage = jobMatchPercentageAgent.calculateMatchPercentage(similarityScore, user, job);
+      const trackMatch = jobMatchPercentageAgent.isTrackMatch(user, job);
+      const experienceMatch = jobMatchPercentageAgent.isExperienceMatch(user, job);
       
-      // Apply AI-calculated adjustments
-      let matchScore = baseScore;
+      // Calculate matchScore (0-1) from matchPercentage for consistency
+      const matchScore = matchPercentage / 100;
       
-      // Track alignment boost
-      let trackMatch = false;
-      if (user.preferredTrack && job.track && 
-          user.preferredTrack.toLowerCase() === job.track.toLowerCase()) {
-        matchScore += 0.2;
-        trackMatch = true;
-      }
+      console.log(`\n✅ Final Match Result:`);
+      console.log(`   Match Percentage: ${matchPercentage}%`);
+      console.log(`   Match Score: ${matchScore.toFixed(2)}`);
+      console.log(`   Embedding Similarity: ${Math.round(similarityScore * 100)}%`);
+      console.log(`   Track Match: ${trackMatch ? 'Yes' : 'No'}`);
+      console.log(`   Experience Match: ${experienceMatch ? 'Yes' : 'No'}\n`);
       
-      // Experience level alignment
-      let experienceMatch = false;
-      const experienceLevels = { 'Fresher': 1, 'Junior': 2, 'Mid': 3, 'Senior': 4 };
-      const userExpLevel = experienceLevels[user.experienceLevel] || 1;
-      const jobExpLevel = experienceLevels[job.experienceLevel] || 1;
-      
-      if (userExpLevel >= jobExpLevel) {
-        matchScore += 0.1;
-        experienceMatch = true;
-      } else if (userExpLevel === jobExpLevel - 1) {
-        matchScore += 0.05;
-      }
-      
-      // Apply AI-suggested adjustments if available
-      if (aiAnalysis && aiAnalysis.scoreAdjustment) {
-        matchScore += aiAnalysis.scoreAdjustment;
-      }
-      
-      // Cap at 1.0
-      matchScore = Math.min(matchScore, 1.0);
-      
-      // Calculate match percentage
-      const matchPercentage = Math.round(matchScore * 100);
-      
-      // Generate key reasons (use AI-generated if available, otherwise fallback)
-      const keyReasons = aiAnalysis?.keyReasons || this.generateFallbackReasons(
-        exactMatchedSkills,
-        missingSkills,
-        trackMatch,
-        experienceMatch,
-        user.experienceLevel,
-        job.experienceLevel
-      );
+      // Generate key reasons - use fallback for faster response if skipAIReasons is true
+      const keyReasons = skipAIReasons
+        ? this.generateFallbackReasons(matchedSkills, missingSkills, trackMatch, experienceMatch, user.experienceLevel, job.experienceLevel)
+        : await this.generateKeyReasons(
+            matchedSkills,
+            missingSkills,
+            trackMatch,
+            experienceMatch,
+            user.experienceLevel,
+            job.experienceLevel,
+            matchPercentage
+          );
       
       // Get application platforms
       const applicationPlatforms = this.getApplicationPlatforms(job.track, job.jobType);
@@ -118,96 +111,62 @@ class AIJobMatchingService {
       return {
         jobId: job._id,
         job: job,
-        matchedSkills: exactMatchedSkills,
+        matchedSkills,
         missingSkills,
-        matchScore,
+        matchScore, // Now properly defined!
         matchPercentage,
         keyReasons,
         applicationPlatforms,
-        aiEnhanced: !!aiAnalysis,
+        embeddingBased: similarityScore > 0,
+        aiAgent: true, // Flag indicating this was generated by Job Match Percentage Agent
+        embeddingSimilarity: Math.round(similarityScore * 100), // Raw embedding similarity percentage
       };
     } catch (error) {
       console.error('Error in AI job match analysis:', error);
-      // Fallback to rule-based matching if AI fails
+      // Fallback to rule-based matching if embedding fails
       return this.fallbackMatchAnalysis(user, job);
     }
   }
 
   /**
-   * Get AI-powered match analysis using Gemini
-   * @param {Object} userContext - User profile context
-   * @param {Object} jobContext - Job context
-   * @param {Array} matchedSkills - Skills that match
-   * @param {Array} missingSkills - Skills that are missing
-   * @returns {Object} AI analysis with score adjustment and key reasons
+   * Generate key reasons using AI
    */
-  async getAIMatchAnalysis(userContext, jobContext, matchedSkills, missingSkills) {
+  async generateKeyReasons(matchedSkills, missingSkills, trackMatch, experienceMatch, userExp, jobExp, matchPercentage) {
     try {
-      const prompt = `You are an intelligent career matching AI. Analyze the match between a candidate and a job posting.
+      const prompt = `Generate 2-4 concise key reasons for a job match with ${matchPercentage}% match score.
 
-CANDIDATE PROFILE:
-- Skills: ${userContext.skills.join(', ')}
-- Experience Level: ${userContext.experienceLevel}
-- Preferred Career Track: ${userContext.preferredTrack}
-- Career Interests: ${userContext.careerInterests.join(', ')}
-- Education Level: ${userContext.educationLevel}
+Matched Skills: ${matchedSkills.join(', ') || 'None'}
+Missing Skills: ${missingSkills.join(', ') || 'None'}
+Track Match: ${trackMatch ? 'Yes' : 'No'}
+Experience Match: ${experienceMatch ? 'Yes' : 'No'}
+User Experience: ${userExp}
+Job Requires: ${jobExp}
 
-JOB POSTING:
-- Title: ${jobContext.title}
-- Company: ${jobContext.company}
-- Required Skills: ${jobContext.requiredSkills.join(', ')}
-- Experience Level Required: ${jobContext.experienceLevel}
-- Career Track: ${jobContext.track}
-- Job Type: ${jobContext.jobType}
-- Location: ${jobContext.location}
-
-MATCH ANALYSIS:
-- Matched Skills: ${matchedSkills.join(', ')}
-- Missing Skills: ${missingSkills.join(', ')}
-
-Your task:
-1. Calculate a match score adjustment (between -0.2 and +0.2) based on:
-   - Quality of skill matches (not just quantity)
-   - Transferable skills that could compensate for missing ones
-   - Career track alignment
-   - Experience level fit
-   - Overall candidate-job compatibility
-
-2. Generate 2-4 key reasons explaining why this is a good match (or why it's not ideal), in a concise format like:
-   - "Matches React, JS, HTML; missing Redux and TypeScript"
-   - "Perfect alignment with your preferred career track"
-   - "Your Mid experience level meets the Mid requirement"
-   - "Strong foundational skills, but missing some advanced requirements"
-
-3. Consider transferable skills (e.g., if user knows JavaScript and job requires TypeScript, that's a partial match)
+Generate reasons in this format:
+- "Matches React, JS, HTML; missing Redux and TypeScript"
+- "Perfect alignment with your preferred career track"
+- "Your Mid experience level meets the Mid requirement"
 
 Return a JSON object with this structure:
 {
-  "scoreAdjustment": <number between -0.2 and 0.2>,
-  "keyReasons": [<array of 2-4 concise reason strings>],
-  "matchQuality": "<excellent|good|fair|poor>",
-  "recommendation": "<brief recommendation text>"
+  "keyReasons": ["reason1", "reason2", "reason3"]
 }
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
-      const analysis = await aiService.generateStructuredJSON(prompt, {
-        scoreAdjustment: 'number',
+      const response = await aiService.generateStructuredJSON(prompt, {
         keyReasons: 'array',
-        matchQuality: 'string',
-        recommendation: 'string',
       });
 
-      return {
-        scoreAdjustment: Math.max(-0.2, Math.min(0.2, analysis.scoreAdjustment || 0)),
-        keyReasons: analysis.keyReasons || [],
-        matchQuality: analysis.matchQuality || 'fair',
-        recommendation: analysis.recommendation || '',
-      };
+      if (response.keyReasons && Array.isArray(response.keyReasons)) {
+        return response.keyReasons;
+      }
     } catch (error) {
-      console.error('AI match analysis failed, using fallback:', error.message);
-      return null;
+      console.error('AI key reasons generation failed:', error.message);
     }
+
+    // Fallback to rule-based reasons
+    return this.generateFallbackReasons(matchedSkills, missingSkills, trackMatch, experienceMatch, userExp, jobExp);
   }
 
   /**
@@ -252,11 +211,11 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
   }
 
   /**
-   * Fallback rule-based matching if AI fails
+   * Fallback rule-based matching if embeddings fail
    */
   fallbackMatchAnalysis(user, job) {
-    const exactMatchedSkills = user.skills.filter((userSkill) =>
-      job.requiredSkills.some(
+    const exactMatchedSkills = (user.skills || []).filter((userSkill) =>
+      (job.requiredSkills || []).some(
         (jobSkill) => userSkill.toLowerCase() === jobSkill.toLowerCase()
       )
     );
@@ -265,14 +224,14 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       return null;
     }
 
-    const missingSkills = job.requiredSkills.filter(
+    const missingSkills = (job.requiredSkills || []).filter(
       (jobSkill) =>
         !exactMatchedSkills.some(
           (matchedSkill) => matchedSkill.toLowerCase() === jobSkill.toLowerCase()
         )
     );
 
-    const baseScore = exactMatchedSkills.length / (job.requiredSkills.length || 1);
+    const baseScore = exactMatchedSkills.length / ((job.requiredSkills?.length || 1));
     let matchScore = baseScore;
     
     let trackMatch = false;
@@ -317,7 +276,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       matchPercentage,
       keyReasons,
       applicationPlatforms,
-      aiEnhanced: false,
+      embeddingBased: false,
     };
   }
 
@@ -389,43 +348,81 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
   }
 
   /**
-   * Analyze multiple jobs in parallel (with rate limiting)
+   * AI Agent: Analyze multiple jobs - OPTIMIZED FOR SPEED
+   * Uses fast rule-based matching with early filtering to process jobs quickly
+   * Skips expensive ChromaDB/embeddings for most jobs
+   * 
    * @param {Object} user - User profile
    * @param {Array} jobs - Array of job objects
    * @returns {Array} Array of match analyses
    */
   async analyzeMultipleJobs(user, jobs) {
     try {
-      // Process jobs in batches to avoid rate limiting
-      const batchSize = 5;
-      const results = [];
+      const startTime = Date.now();
+      console.log(`⚡ OPTIMIZED: Analyzing ${jobs.length} jobs with fast rule-based matching...`);
+
+      // OPTIMIZATION 1: Early filtering - remove jobs with 0 matches BEFORE processing
+      // This eliminates expensive operations on irrelevant jobs
+      const preFilteredJobs = jobs
+        .map(job => {
+          // Quick skill check (no ChromaDB, no AI)
+          const exactMatchedSkills = (user.skills || []).filter((userSkill) =>
+            (job.requiredSkills || []).some(
+              (jobSkill) => userSkill.toLowerCase() === jobSkill.toLowerCase()
+            )
+          );
+          return { job, matchedSkills: exactMatchedSkills };
+        })
+        .filter(({ matchedSkills }) => matchedSkills.length > 0) // Only jobs with matches
+        .sort((a, b) => b.matchedSkills.length - a.matchedSkills.length) // Sort by match count
+        .slice(0, 20); // LIMIT to top 20 matches only (prevents processing too many)
       
-      for (let i = 0; i < jobs.length; i += batchSize) {
-        const batch = jobs.slice(i, i + batchSize);
-        const batchResults = await Promise.all(
-          batch.map(job => this.analyzeJobMatch(user, job))
-        );
-        results.push(...batchResults);
-        
-        // Small delay between batches to avoid rate limiting
-        if (i + batchSize < jobs.length) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
+      if (preFilteredJobs.length === 0) {
+        console.log(`✅ No matching jobs found (processed in ${Date.now() - startTime}ms)`);
+        return [];
       }
+
+      const filteredJobs = preFilteredJobs.map(({ job }) => job);
+      console.log(`✅ Pre-filtered to ${filteredJobs.length} relevant jobs (from ${jobs.length} total)`);
+
+      // OPTIMIZATION 2: Skip ChromaDB/embeddings entirely for speed
+      // Use fast rule-based matching for all jobs (no AI calls, no ChromaDB queries)
+      console.log(`⚡ Using fast rule-based matching (no embeddings, no AI delays)...`);
       
-      return results
+      // OPTIMIZATION 3: Process in parallel with Promise.all (much faster than sequential)
+      const results = await Promise.all(
+        filteredJobs.map(async (job) => {
+          try {
+            // Use fallback analysis (fast, no AI/ChromaDB, no delays)
+            return this.fallbackMatchAnalysis(user, job);
+          } catch (error) {
+            console.warn(`Error processing job ${job._id}:`, error.message);
+            return null;
+          }
+        })
+      );
+
+      // Filter nulls, sort by match score, and limit to top 10
+      const validResults = results
         .filter(rec => rec !== null)
-        .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+        .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0))
+        .slice(0, 10); // Return top 10 only
+
+      const duration = Date.now() - startTime;
+      console.log(`✅ Processed ${validResults.length} job recommendations in ${duration}ms (${filteredJobs.length} jobs analyzed)`);
+      
+      return validResults;
+
     } catch (error) {
       console.error('Error analyzing multiple jobs:', error);
-      // Fallback to rule-based matching
+      // Fallback: quick rule-based matching
       return jobs
         .map(job => this.fallbackMatchAnalysis(user, job))
         .filter(rec => rec !== null)
-        .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+        .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0))
+        .slice(0, 10);
     }
   }
 }
 
 module.exports = new AIJobMatchingService();
-

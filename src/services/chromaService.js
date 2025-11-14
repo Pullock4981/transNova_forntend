@@ -1,4 +1,4 @@
-const { ChromaClient } = require('chromadb');
+const { CloudClient } = require('chromadb');
 
 class ChromaService {
   constructor() {
@@ -11,17 +11,13 @@ class ChromaService {
     if (this.initialized) return;
 
     try {
-      // Connect to ChromaDB Cloud
-      const apiKey = process.env.CHROMA_API_KEY || 'ck-9M44Hp1zskNDFvAE9fLrGyHnTdkseX7cZDuFgAD9VkeB';
+      // Connect to ChromaDB Cloud using CloudClient
+      const apiKey = process.env.CHROMA_API_KEY || 'ck-CVZY4QeuzotW3nP19M3FjF7cBk5KSSB12V3pxx2Kvr6g';
       const tenant = process.env.CHROMA_TENANT || '298d6e96-9463-4a9f-8569-b8c5bfb38c88';
-      const database = process.env.CHROMA_DATABASE || 'transnova';
+      const database = process.env.CHROMA_DATABASE || 'hackathon';
       
-      this.client = new ChromaClient({
-        path: `https://${tenant}.chromadb.cloud`,
-        auth: {
-          provider: 'token',
-          credentials: apiKey,
-        },
+      this.client = new CloudClient({
+        apiKey: apiKey,
         tenant: tenant,
         database: database,
       });

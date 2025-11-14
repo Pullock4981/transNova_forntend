@@ -133,11 +133,18 @@ const getJobRecommendations = async (userId) => {
       return [];
     }
 
-    const allJobs = await Job.find();
+    // OPTIMIZATION: Limit jobs fetched from database and only select needed fields
+    // This reduces memory usage and query time
+    const allJobs = await Job.find()
+      .select('title company location requiredSkills experienceLevel jobType track') // Only needed fields
+      .limit(50) // Limit to 50 jobs max (prevents processing too many)
+      .lean(); // Faster - returns plain objects instead of Mongoose documents
     
     if (allJobs.length === 0) {
       return [];
     }
+    
+    console.log(`📊 Fetched ${allJobs.length} jobs from database`);
 
     // Use AI-powered matching service
     // This will analyze each job using Gemini API for intelligent matching

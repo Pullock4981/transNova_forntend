@@ -1,7 +1,12 @@
-const cvExtractionService = require('../services/cvExtractionService');
 const skillGapService = require('../services/skillGapService');
 const roadmapService = require('../services/roadmapService');
-const careerBotService = require('../services/careerBotService');
+const { 
+  careerMentorAgent, 
+  skillGapAnalysisAgent, 
+  careerRoadmapAgent,
+  cvProfileAssistantAgent,
+  cvExtractionAgent
+} = require('../agents');
 const aiService = require('../services/aiService');
 const chromaService = require('../services/chromaService');
 const pdfService = require('../services/pdfService');
@@ -38,7 +43,7 @@ const extractCVSkills = async (req, res, next) => {
       });
     }
 
-    const extracted = await cvExtractionService.extractSkillsFromCV(
+    const extracted = await cvExtractionAgent.extractSkillsFromCV(
       cvText,
       preferredTrack
     );
@@ -46,6 +51,43 @@ const extractCVSkills = async (req, res, next) => {
     res.status(200).json({
       success: true,
       data: extracted,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Verify tools with AI - ask AI if each item is actually a tool
+ * POST /api/ai/verify-tools
+ */
+const verifyTools = async (req, res, next) => {
+  try {
+    const { tools, skills = [], technologies = [] } = req.body;
+
+    if (!tools || !Array.isArray(tools)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tools array is required',
+      });
+    }
+
+    if (tools.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          validTools: [],
+          movedToSkills: [],
+          movedToTechnologies: [],
+        },
+      });
+    }
+
+    const verified = await cvExtractionAgent.verifyToolsWithAI(tools, skills, technologies);
+
+    res.status(200).json({
+      success: true,
+      data: verified,
     });
   } catch (error) {
     next(error);
@@ -142,21 +184,27 @@ Return JSON:
       };
     }
 
-    // Get skill gap analysis
+    // Get skill gap analysis using Skill Gap Analysis Agent
     let gapAnalysis;
     try {
-      gapAnalysis = await skillGapService.analyzeSkillGaps(
-        user.skills,
-        job.requiredSkills,
-        userId
-      );
+      gapAnalysis = await skillGapAnalysisAgent.analyzeSkillGaps(user, job);
     } catch (error) {
-      console.error('Gap Analysis Error:', error);
-      gapAnalysis = {
-        missingSkills,
-        recommendations: [],
-        message: 'Unable to generate detailed gap analysis',
-      };
+      console.error('Skill Gap Analysis Agent Error:', error);
+      // Fallback to old service
+      try {
+        gapAnalysis = await skillGapService.analyzeSkillGaps(
+          user.skills,
+          job.requiredSkills,
+          userId
+        );
+      } catch (fallbackError) {
+        console.error('Fallback Gap Analysis Error:', fallbackError);
+        gapAnalysis = {
+          missingSkills,
+          recommendations: [],
+          message: 'Unable to generate detailed gap analysis',
+        };
+      }
     }
 
     res.status(200).json({
@@ -200,7 +248,8 @@ const generateRoadmap = async (req, res, next) => {
       });
     }
 
-    const roadmap = await roadmapService.generateCareerRoadmap(
+    // Use Career Roadmap Agent
+    const roadmap = await careerRoadmapAgent.generateRoadmap(
       userId,
       targetRole,
       timeframe || 6,
@@ -223,7 +272,8 @@ const generateRoadmap = async (req, res, next) => {
 const getUserRoadmaps = async (req, res, next) => {
   try {
     const userId = req.user.userId;
-    const roadmaps = await roadmapService.getUserRoadmaps(userId);
+    // Use Career Roadmap Agent
+    const roadmaps = await careerRoadmapAgent.getUserRoadmaps(userId);
 
     res.status(200).json({
       success: true,
@@ -243,7 +293,8 @@ const getRoadmap = async (req, res, next) => {
     const { roadmapId } = req.params;
     const userId = req.user.userId;
 
-    const roadmap = await roadmapService.getRoadmapById(roadmapId, userId);
+    // Use Career Roadmap Agent
+    const roadmap = await careerRoadmapAgent.getRoadmapById(roadmapId, userId);
 
     res.status(200).json({
       success: true,
@@ -263,7 +314,8 @@ const deleteRoadmap = async (req, res, next) => {
     const { roadmapId } = req.params;
     const userId = req.user.userId;
 
-    await roadmapService.deleteRoadmap(roadmapId, userId);
+    // Use Career Roadmap Agent
+    await careerRoadmapAgent.deleteRoadmap(roadmapId, userId);
 
     res.status(200).json({
       success: true,
@@ -290,7 +342,7 @@ const chatWithCareerBot = async (req, res, next) => {
       });
     }
 
-    const response = await careerBotService.getContextualResponse(
+    const response = await careerMentorAgent.getContextualResponse(
       userId,
       message
     );
@@ -322,7 +374,7 @@ const uploadCV = async (req, res, next) => {
     
     // Extract skills using AI
     const preferredTrack = req.body.preferredTrack || '';
-    const extracted = await cvExtractionService.extractSkillsFromCV(
+    const extracted = await cvExtractionAgent.extractSkillsFromCV(
       cvText,
       preferredTrack
     );
@@ -365,7 +417,84 @@ const initializeChroma = async (req, res, next) => {
   }
 };
 
+/**
+ * Generate professional summary
+ * POST /api/ai/cv/summary
+ */
+const generateProfessionalSummary = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const summary = await cvProfileAssistantAgent.generateProfessionalSummary(userId);
+
+    res.status(200).json({
+      success: true,
+      data: summary,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Suggest bullet points for experience/project
+ * POST /api/ai/cv/bullet-points
+ */
+const suggestBulletPoints = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const { experience } = req.body; // Optional: specific experience object
+
+    const bullets = await cvProfileAssistantAgent.suggestBulletPoints(userId, experience || null);
+
+    res.status(200).json({
+      success: true,
+      data: bullets,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get LinkedIn and portfolio recommendations
+ * GET /api/ai/cv/recommendations
+ */
+const getLinkedInRecommendations = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const recommendations = await cvProfileAssistantAgent.getLinkedInRecommendations(userId);
+
+    res.status(200).json({
+      success: true,
+      data: recommendations,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Generate CV layout
+ * POST /api/ai/cv/generate
+ */
+const generateCVLayout = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const options = req.body.options || {};
+
+    const cv = await cvProfileAssistantAgent.generateCVLayout(userId, options);
+
+    res.status(200).json({
+      success: true,
+      data: cv,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
+  verifyTools,
   extractCVSkills,
   getEnhancedJobMatch,
   generateRoadmap,
@@ -376,5 +505,9 @@ module.exports = {
   uploadCV,
   upload, // Export multer middleware
   initializeChroma,
+  generateProfessionalSummary,
+  suggestBulletPoints,
+  getLinkedInRecommendations,
+  generateCVLayout,
 };
 

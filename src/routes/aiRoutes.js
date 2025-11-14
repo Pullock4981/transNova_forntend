@@ -4,6 +4,7 @@ const authenticateJWT = require('../middleware/authenticateJWT');
 const validateObjectId = require('../utils/validateObjectId');
 const {
   extractCVSkills,
+  verifyTools,
   getEnhancedJobMatch,
   generateRoadmap,
   getUserRoadmaps,
@@ -13,6 +14,10 @@ const {
   uploadCV,
   upload,
   initializeChroma,
+  generateProfessionalSummary,
+  suggestBulletPoints,
+  getLinkedInRecommendations,
+  generateCVLayout,
 } = require('../controllers/aiController');
 
 // All AI routes require authentication
@@ -20,6 +25,9 @@ router.use(authenticateJWT);
 
 // Extract skills from CV text
 router.post('/extract-cv', extractCVSkills);
+
+// Verify tools with AI
+router.post('/verify-tools', verifyTools);
 
 // Upload and extract CV from PDF
 router.post('/upload-cv', upload.single('cvFile'), uploadCV);
@@ -44,6 +52,12 @@ router.post('/chat', chatWithCareerBot);
 
 // Initialize ChromaDB (optional, for admin/testing)
 router.post('/init-chroma', initializeChroma);
+
+// CV / Profile Assistant endpoints
+router.post('/cv/summary', generateProfessionalSummary);
+router.post('/cv/bullet-points', suggestBulletPoints);
+router.get('/cv/recommendations', getLinkedInRecommendations);
+router.post('/cv/generate', generateCVLayout);
 
 module.exports = router;
 
