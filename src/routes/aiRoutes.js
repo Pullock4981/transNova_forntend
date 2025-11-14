@@ -11,13 +11,17 @@ const {
   getRoadmap,
   deleteRoadmap,
   chatWithCareerBot,
+  chatWithCareerBotStream,
   uploadCV,
   upload,
   initializeChroma,
   generateProfessionalSummary,
+  generateProfessionalSummaryStream,
   suggestBulletPoints,
   getLinkedInRecommendations,
+  getLinkedInRecommendationsStream,
   generateCVLayout,
+  generateCVLayoutStream,
 } = require('../controllers/aiController');
 
 // All AI routes require authentication
@@ -50,14 +54,20 @@ router.delete('/roadmap/:roadmapId', validateObjectId('roadmapId'), deleteRoadma
 // Chat with CareerBot
 router.post('/chat', chatWithCareerBot);
 
+// Chat with CareerBot (Streaming - word-by-word)
+router.post('/chat-stream', chatWithCareerBotStream);
+
 // Initialize ChromaDB (optional, for admin/testing)
 router.post('/init-chroma', initializeChroma);
 
 // CV / Profile Assistant endpoints
 router.post('/cv/summary', generateProfessionalSummary);
+router.post('/cv/summary-stream', generateProfessionalSummaryStream);
 router.post('/cv/bullet-points', suggestBulletPoints);
 router.get('/cv/recommendations', getLinkedInRecommendations);
+router.get('/cv/recommendations-stream', getLinkedInRecommendationsStream);
 router.post('/cv/generate', generateCVLayout);
+router.post('/cv/generate-stream', generateCVLayoutStream);
 
 module.exports = router;
 

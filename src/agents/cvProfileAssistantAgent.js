@@ -1,5 +1,7 @@
 const aiService = require('../services/aiService');
+const chromaService = require('../services/chromaService');
 const User = require('../models/User');
+const Job = require('../models/Job');
 
 /**
  * CV / Profile Assistant Agent
@@ -12,6 +14,7 @@ const User = require('../models/User');
  * - Provide LinkedIn and portfolio improvement recommendations
  * - Generate clean CV layouts (text format for PDF export)
  * - Use AI to enhance profile descriptions
+ * - Use embeddings to find similar successful profiles for better recommendations
  *
  * Usage:
  *   const agent = require('./agents/cvProfileAssistantAgent');
@@ -21,6 +24,204 @@ const User = require('../models/User');
  *   const cvText = await agent.generateCVLayout(userId);
  */
 class CVProfileAssistantAgent {
+  /**
+   * Initialize ChromaDB for semantic search
+   */
+  async initialize() {
+    if (!chromaService.initialized) {
+      await chromaService.initialize();
+    }
+  }
+
+  /**
+   * Find similar successful profiles using embeddings
+   * Used to provide industry-standard recommendations
+   * 
+   * @param {Object} user - User profile
+   * @returns {Array} Array of similar job requirements/industry standards
+   */
+  async findSimilarProfiles(user) {
+    try {
+      await this.initialize();
+      
+      if (!chromaService.collection || !user.skills || user.skills.length === 0) {
+        return [];
+      }
+
+      // Create user profile text for semantic search
+      const userProfileText = [
+        user.preferredTrack || '',
+        ...(user.skills || []),
+        user.experienceLevel || '',
+      ].filter(Boolean).join(' ');
+
+      // Search for similar jobs (which represent industry standards)
+      const similarJobs = await chromaService.collection.query({
+        queryTexts: [userProfileText],
+        nResults: 5,
+        where: { type: 'job' },
+      });
+
+      if (similarJobs.metadatas && similarJobs.metadatas[0]) {
+        const jobIds = similarJobs.metadatas[0]
+          .map(meta => meta.jobId)
+          .filter(Boolean);
+        
+        if (jobIds.length > 0) {
+          const jobs = await Job.find({ _id: { $in: jobIds } })
+            .select('title company requiredSkills experienceLevel track')
+            .lean()
+            .limit(5);
+          
+          return jobs;
+        }
+      }
+
+      return [];
+    } catch (error) {
+      console.warn('Error finding similar profiles:', error.message);
+      return [];
+    }
+  }
+  /**
+   * Generate professional summary with streaming
+   * 
+   * @param {String} userId - The ID of the user.
+   * @param {Function} onChunk - Callback for each chunk: (chunk: string) => void
+   * @returns {Object} Professional summary and suggestions.
+   */
+  async generateProfessionalSummaryStream(userId, onChunk = null) {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Reuse the same prompt building logic
+    let experiencesData = [];
+    try {
+      if (user.experiences && user.experiences.length > 0) {
+        experiencesData = user.experiences.map(exp => {
+          const parsed = typeof exp === 'string' ? JSON.parse(exp) : exp;
+          return {
+            title: parsed.title || parsed.role || 'Project',
+            description: parsed.description || '',
+            technologies: parsed.technologies || [],
+          };
+        });
+      }
+    } catch (e) {}
+
+    const topSkills = (user.skills || []).slice(0, 6).join(', ');
+    const experienceLevel = user.experienceLevel || 'Fresher';
+    const track = user.preferredTrack || 'your field';
+    const allSkills = user.skills || [];
+    const skillCategories = this.categorizeSkills(allSkills);
+    const totalExperienceMonths = this.calculateTotalExperience(user.experiences || []);
+    const experienceYears = Math.floor(totalExperienceMonths / 12);
+    const experienceMonths = totalExperienceMonths % 12;
+    const experienceText = experienceYears > 0 
+      ? `${experienceYears} year${experienceYears > 1 ? 's' : ''}${experienceMonths > 0 ? ` ${experienceMonths} month${experienceMonths > 1 ? 's' : ''}` : ''}`
+      : experienceMonths > 0 ? `${experienceMonths} month${experienceMonths > 1 ? 's' : ''}` : '';
+
+    let similarProfiles = [];
+    try {
+      similarProfiles = await this.findSimilarProfiles(user);
+    } catch (error) {
+      console.warn('Error finding similar profiles for summary:', error.message);
+    }
+
+    const industryContext = similarProfiles.length > 0
+      ? `\n\nINDUSTRY STANDARDS (Based on similar ${track} roles):\n${similarProfiles.map(job => 
+          `- ${job.title} at ${job.company}: Requires ${(job.requiredSkills || []).slice(0, 5).join(', ')}`
+        ).join('\n')}`
+      : '';
+
+    const projectCount = experiencesData.length;
+    const keyProjects = experiencesData.slice(0, 2).map(e => e.title).join(', ');
+
+    const prompt = `You are a C-level executive resume writer. Create a professional summary (3-4 sentences, 120-160 words) for this candidate:
+
+CANDIDATE PROFILE:
+- Name: ${user.fullName || 'Professional'}
+- Track: ${track}
+- Experience: ${experienceLevel}${experienceText ? ` (${experienceText})` : ''}
+- Skills: ${topSkills || 'To be developed'}
+- Projects: ${projectCount}${keyProjects ? ` (${keyProjects})` : ''}
+${industryContext}
+
+Return ONLY JSON:
+{
+  "summary": "Professional summary text here (3-4 sentences)",
+  "suggestions": ["suggestion 1", "suggestion 2"],
+  "keywords": ["${track}", "${allSkills[0] || 'technical'}", "${allSkills[1] || 'development'}"]
+}`;
+
+    try {
+      // Stream the response
+      let fullResponse = '';
+      if (onChunk) {
+        fullResponse = await aiService.generateContentStream(prompt, {
+          temperature: 0.7,
+          maxTokens: 800,
+        }, onChunk);
+      } else {
+        fullResponse = await aiService.generateContent(prompt, {
+          temperature: 0.7,
+          maxTokens: 800,
+        });
+      }
+
+      // Parse JSON from response
+      let result;
+      try {
+        const jsonMatch = fullResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          result = JSON.parse(jsonMatch[0]);
+        } else {
+          // Fallback to structured JSON
+          result = await aiService.generateStructuredJSON(prompt, {
+            type: 'object',
+            properties: {
+              summary: { type: 'string' },
+              suggestions: { type: 'array', items: { type: 'string' } },
+              keywords: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['summary', 'suggestions', 'keywords'],
+          }, {
+            temperature: 0.7,
+            maxTokens: 800,
+          });
+        }
+      } catch (parseError) {
+        result = await aiService.generateStructuredJSON(prompt, {
+          type: 'object',
+          properties: {
+            summary: { type: 'string' },
+            suggestions: { type: 'array', items: { type: 'string' } },
+            keywords: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['summary', 'suggestions', 'keywords'],
+        }, {
+          temperature: 0.7,
+          maxTokens: 800,
+        });
+      }
+
+      return {
+        summary: result.summary || this.generateFallbackSummary(user),
+        suggestions: result.suggestions || [],
+        keywords: result.keywords || [],
+      };
+    } catch (error) {
+      console.error('Professional Summary Generation Error:', error);
+      return {
+        summary: this.generateFallbackSummary(user),
+        suggestions: [],
+        keywords: user.skills?.slice(0, 5) || [],
+      };
+    }
+  }
+
   /**
    * Generates a professional summary based on user profile.
    *
@@ -66,7 +267,21 @@ class CVProfileAssistantAgent {
       ? `${experienceYears} year${experienceYears > 1 ? 's' : ''}${experienceMonths > 0 ? ` ${experienceMonths} month${experienceMonths > 1 ? 's' : ''}` : ''}`
       : experienceMonths > 0 ? `${experienceMonths} month${experienceMonths > 1 ? 's' : ''}` : '';
 
-    const prompt = `You are a C-level executive resume writer and career strategist with 20+ years of experience crafting executive summaries for Fortune 500 CTOs, VPs of Engineering, and senior technical leaders at Google, Microsoft, Amazon, and Meta. Create a WORLD-CLASS, EXECUTIVE-LEVEL professional summary that immediately positions the candidate as a top-tier professional.
+    // OPTIMIZATION: Find similar profiles using embeddings for industry-standard context
+    let similarProfiles = [];
+    try {
+      similarProfiles = await this.findSimilarProfiles(user);
+    } catch (error) {
+      console.warn('Error finding similar profiles for summary:', error.message);
+    }
+
+    const industryContext = similarProfiles.length > 0
+      ? `\n\nINDUSTRY STANDARDS (Based on similar ${track} roles):\n${similarProfiles.map(job => 
+          `- ${job.title} at ${job.company}: Requires ${(job.requiredSkills || []).slice(0, 5).join(', ')}`
+        ).join('\n')}`
+      : '';
+
+    const prompt = `You are a C-level executive resume writer and career strategist with 20+ years of experience crafting executive summaries for Fortune 500 CTOs, VPs of Engineering, and senior technical leaders at Google, Microsoft, Amazon, and Meta. Create a WORLD-CLASS, EXECUTIVE-LEVEL professional summary that immediately positions the candidate as a top-tier professional.${industryContext}
 
 CANDIDATE PROFILE ANALYSIS:
 - Full Name: ${user.fullName || 'Professional'}
@@ -133,10 +348,18 @@ CRITICAL REQUIREMENTS:
 - Should make hiring managers think "I need to interview this person immediately"`;
 
     try {
+      // OPTIMIZATION: Task-specific temperature (higher for creative summary) and tokens
       const result = await aiService.generateStructuredJSON(prompt, {
-        summary: 'string',
-        suggestions: 'array',
-        keywords: 'array',
+        type: 'object',
+        properties: {
+          summary: { type: 'string' },
+          suggestions: { type: 'array', items: { type: 'string' } },
+          keywords: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['summary', 'suggestions', 'keywords'],
+      }, {
+        temperature: 0.7, // OPTIMIZATION: Higher temperature for creative professional summaries
+        maxTokens: 800,   // OPTIMIZATION: Sufficient for professional summary + suggestions
       });
 
       return {
@@ -268,9 +491,17 @@ CRITICAL REQUIREMENTS:
 - Should read like it belongs on a CTO or VP of Engineering resume`;
 
     try {
+      // OPTIMIZATION: Task-specific temperature (higher for creative bullet points) and tokens
       const result = await aiService.generateStructuredJSON(prompt, {
-        bulletPoints: 'array',
-        improvements: 'array',
+        type: 'object',
+        properties: {
+          bulletPoints: { type: 'array', items: { type: 'string' } },
+          improvements: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['bulletPoints', 'improvements'],
+      }, {
+        temperature: 0.7, // OPTIMIZATION: Higher temperature for creative bullet points
+        maxTokens: 1000, // OPTIMIZATION: Sufficient for multiple bullet points + improvements
       });
 
       return {
@@ -286,6 +517,134 @@ CRITICAL REQUIREMENTS:
           'Include measurable outcomes or achievements',
           'Use stronger action verbs',
         ],
+      };
+    }
+  }
+
+  /**
+   * Get LinkedIn recommendations with streaming
+   * 
+   * @param {String} userId - The ID of the user.
+   * @param {Function} onChunk - Callback for each chunk: (chunk: string) => void
+   * @returns {Object} Recommendations for LinkedIn and portfolio.
+   */
+  async getLinkedInRecommendationsStream(userId, onChunk = null) {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Reuse the same prompt building logic
+    let experiencesData = [];
+    try {
+      if (user.experiences && user.experiences.length > 0) {
+        experiencesData = user.experiences.map(exp => {
+          const parsed = typeof exp === 'string' ? JSON.parse(exp) : exp;
+          return {
+            title: parsed.title || parsed.role || 'Project',
+            description: parsed.description || '',
+            technologies: parsed.technologies || [],
+          };
+        });
+      }
+    } catch (e) {}
+
+    const topSkills = (user.skills || []).slice(0, 8).join(', ');
+    const experienceLevel = user.experienceLevel || 'Fresher';
+    const track = user.preferredTrack || 'your field';
+    const projectCount = experiencesData.length;
+    const sampleProjects = experiencesData.slice(0, 3).map(e => e.title).join(', ');
+
+    let similarProfiles = [];
+    try {
+      similarProfiles = await this.findSimilarProfiles(user);
+    } catch (error) {
+      console.warn('Error finding similar profiles for recommendations:', error.message);
+    }
+
+    const industryStandards = similarProfiles.length > 0
+      ? `\n\nINDUSTRY STANDARDS (Based on similar ${track} roles):\n${similarProfiles.map(job => 
+          `- ${job.title} positions typically require: ${(job.requiredSkills || []).slice(0, 6).join(', ')}`
+        ).join('\n')}`
+      : '';
+
+    const prompt = `You are a senior career strategist. Provide professional recommendations for LinkedIn and portfolio optimization.
+
+USER PROFILE:
+- Track: ${track}
+- Experience: ${experienceLevel}
+- Skills: ${topSkills || 'To be developed'}
+- Projects: ${projectCount}${sampleProjects ? ` (${sampleProjects})` : ''}
+${industryStandards}
+
+Return ONLY JSON:
+{
+  "linkedInRecommendations": ["recommendation 1", "recommendation 2", ...],
+  "portfolioRecommendations": ["recommendation 1", "recommendation 2", ...],
+  "generalTips": ["tip 1", "tip 2", ...]
+}`;
+
+    try {
+      // Stream the response
+      let fullResponse = '';
+      if (onChunk) {
+        fullResponse = await aiService.generateContentStream(prompt, {
+          temperature: 0.6,
+          maxTokens: 1500,
+        }, onChunk);
+      } else {
+        fullResponse = await aiService.generateContent(prompt, {
+          temperature: 0.6,
+          maxTokens: 1500,
+        });
+      }
+
+      // Parse JSON from response
+      let result;
+      try {
+        const jsonMatch = fullResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          result = JSON.parse(jsonMatch[0]);
+        } else {
+          result = await aiService.generateStructuredJSON(prompt, {
+            type: 'object',
+            properties: {
+              linkedInRecommendations: { type: 'array', items: { type: 'string' } },
+              portfolioRecommendations: { type: 'array', items: { type: 'string' } },
+              generalTips: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['linkedInRecommendations', 'portfolioRecommendations', 'generalTips'],
+          }, {
+            temperature: 0.6,
+            maxTokens: 1500,
+          });
+        }
+      } catch (parseError) {
+        result = await aiService.generateStructuredJSON(prompt, {
+          type: 'object',
+          properties: {
+            linkedInRecommendations: { type: 'array', items: { type: 'string' } },
+            portfolioRecommendations: { type: 'array', items: { type: 'string' } },
+            generalTips: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['linkedInRecommendations', 'portfolioRecommendations', 'generalTips'],
+        }, {
+          temperature: 0.6,
+          maxTokens: 1500,
+        });
+      }
+
+      return {
+        linkedInRecommendations: result.linkedInRecommendations || [],
+        portfolioRecommendations: result.portfolioRecommendations || [],
+        generalTips: result.generalTips || [],
+      };
+    } catch (error) {
+      console.error('LinkedIn Recommendations Generation Error:', error);
+      return {
+        linkedInRecommendations: [],
+        portfolioRecommendations: [],
+        generalTips: [],
       };
     }
   }
@@ -325,7 +684,21 @@ CRITICAL REQUIREMENTS:
     const projectCount = experiencesData.length;
     const sampleProjects = experiencesData.slice(0, 3).map(e => e.title).join(', ');
 
-    const prompt = `You are a senior career strategist and executive recruiter with 15+ years of experience optimizing professional profiles for Fortune 500 companies and top tech firms. You specialize in helping ${track} professionals build compelling personal brands that attract recruiters and hiring managers.
+    // OPTIMIZATION: Find similar profiles using embeddings for industry-standard recommendations
+    let similarProfiles = [];
+    try {
+      similarProfiles = await this.findSimilarProfiles(user);
+    } catch (error) {
+      console.warn('Error finding similar profiles for recommendations:', error.message);
+    }
+
+    const industryStandards = similarProfiles.length > 0
+      ? `\n\nINDUSTRY STANDARDS (Based on similar ${track} roles - use these as benchmarks):\n${similarProfiles.map(job => 
+          `- ${job.title} positions typically require: ${(job.requiredSkills || []).slice(0, 6).join(', ')}`
+        ).join('\n')}\n\nUse these industry standards to provide specific, actionable recommendations that align with what top companies expect.`
+      : '';
+
+    const prompt = `You are a senior career strategist and executive recruiter with 15+ years of experience optimizing professional profiles for Fortune 500 companies and top tech firms. You specialize in helping ${track} professionals build compelling personal brands that attract recruiters and hiring managers.${industryStandards}
 
 Provide PROFESSIONAL-GRADE, STRATEGIC, and DATA-DRIVEN recommendations that reflect industry best practices used by top recruiters and career coaches.
 
@@ -520,10 +893,18 @@ CRITICAL REQUIREMENTS:
 - Write in a confident, authoritative, professional tone`;
 
     try {
+      // OPTIMIZATION: Task-specific temperature (moderate for recommendations) and tokens
       const result = await aiService.generateStructuredJSON(prompt, {
-        linkedInRecommendations: 'array',
-        portfolioRecommendations: 'array',
-        generalTips: 'array',
+        type: 'object',
+        properties: {
+          linkedInRecommendations: { type: 'array', items: { type: 'string' } },
+          portfolioRecommendations: { type: 'array', items: { type: 'string' } },
+          generalTips: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['linkedInRecommendations', 'portfolioRecommendations', 'generalTips'],
+      }, {
+        temperature: 0.6, // OPTIMIZATION: Moderate temperature for balanced recommendations
+        maxTokens: 1500, // OPTIMIZATION: Sufficient for comprehensive recommendations
       });
 
       return {
@@ -548,6 +929,277 @@ CRITICAL REQUIREMENTS:
    * @param {Object} options - Options for CV generation (includeSummary, includeExperiences, etc.).
    * @returns {Object} CV text and metadata.
    */
+  /**
+   * Generate CV layout with streaming
+   * 
+   * @param {String} userId - The ID of the user.
+   * @param {Object} options - CV generation options
+   * @param {Function} onChunk - Callback for each chunk: (chunk: string) => void
+   * @returns {Object} CV text and metadata
+   */
+  async generateCVLayoutStream(userId, options = {}, onChunk = null) {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    const {
+      includeSummary = true,
+      includeExperiences = true,
+      includeSkills = true,
+      includeEducation = true,
+      includeInterests = false,
+    } = options;
+
+    let cvText = '';
+    
+    // Typing mode: Stream character by character with smooth typing effect
+    // Keep cursor visible during AI waits by sending periodic "heartbeat" chunks
+    let lastChunkTime = Date.now();
+    const HEARTBEAT_INTERVAL = 500; // Send heartbeat every 500ms during AI waits
+    
+    const streamChunk = async (text) => {
+      cvText += text;
+      if (onChunk && text) {
+        // Stream character by character for typing effect
+        for (let i = 0; i < text.length; i++) {
+          onChunk(text[i]);
+          lastChunkTime = Date.now();
+          // Small delay for smooth typing effect (adjust for speed)
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      }
+    };
+    
+    // Heartbeat function to keep cursor visible during AI waits
+    const startHeartbeat = () => {
+      if (!onChunk) return null;
+      
+      const heartbeatInterval = setInterval(() => {
+        const timeSinceLastChunk = Date.now() - lastChunkTime;
+        // If no chunk received in last 500ms, send empty string to keep connection alive
+        // This ensures cursor keeps blinking during AI processing
+        if (timeSinceLastChunk > HEARTBEAT_INTERVAL) {
+          // Send invisible character to keep stream alive (cursor will keep blinking)
+          onChunk('');
+        }
+      }, HEARTBEAT_INTERVAL);
+      
+      return heartbeatInterval;
+    };
+    
+    const stopHeartbeat = (intervalId) => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+    
+    // Start heartbeat at the beginning
+    const heartbeatId = startHeartbeat();
+
+    // OPTIMIZATION: Stream header immediately (no AI calls needed)
+    const name = (user.fullName || 'Your Name').toUpperCase();
+    const namePadding = Math.max(0, Math.floor((70 - name.length) / 2));
+    await streamChunk('\n');
+    await streamChunk(' '.repeat(namePadding) + name + '\n');
+    await streamChunk('═'.repeat(70) + '\n');
+    await streamChunk('\n');
+
+    // Contact Information - Stream immediately
+    const contactInfo = [];
+    if (user.email) contactInfo.push(`Email: ${user.email}`);
+    if (user.phone) contactInfo.push(`Phone: ${user.phone}`);
+    if (user.preferredTrack) contactInfo.push(`Specialization: ${user.preferredTrack}`);
+    
+    if (contactInfo.length > 0) {
+      const contactLine = contactInfo.join('  |  ');
+      const contactPadding = Math.max(0, Math.floor((70 - contactLine.length) / 2));
+      await streamChunk(' '.repeat(contactPadding) + contactLine + '\n');
+      await streamChunk('\n');
+    }
+    
+    await streamChunk('═'.repeat(70) + '\n');
+    await streamChunk('\n');
+
+    // OPTIMIZATION: Start summary generation in parallel, but stream skills first (no AI delay)
+    let summaryPromise = null;
+    if (includeSummary) {
+      summaryPromise = this.generateProfessionalSummary(userId).catch(() => ({
+        summary: this.generateFallbackSummary(user)
+      }));
+    }
+
+    // OPTIMIZATION: Stream skills immediately (no AI calls) - user sees content right away
+    if (includeSkills && user.skills && user.skills.length > 0) {
+      await streamChunk('TECHNICAL SKILLS\n');
+      await streamChunk('─'.repeat(70) + '\n');
+      await streamChunk('\n');
+      
+      const skillCategories = this.categorizeSkills(user.skills);
+      const hasCategories = Object.values(skillCategories).some(cat => cat.length > 0);
+      
+      if (hasCategories && user.skills.length > 8) {
+        for (const [catIdx, category] of Object.keys(skillCategories).entries()) {
+          if (skillCategories[category].length > 0) {
+            await streamChunk(`  ${category.toUpperCase()}:\n`);
+            const skillsPerLine = 4;
+            for (let i = 0; i < skillCategories[category].length; i += skillsPerLine) {
+              const skillGroup = skillCategories[category].slice(i, i + skillsPerLine);
+              await streamChunk(`    ${skillGroup.join('  •  ')}\n`);
+            }
+            if (catIdx < Object.keys(skillCategories).length - 1) {
+              await streamChunk('\n');
+            }
+          }
+        }
+      } else {
+        const skillsPerLine = 4;
+        for (let i = 0; i < user.skills.length; i += skillsPerLine) {
+          const skillGroup = user.skills.slice(i, i + skillsPerLine);
+          await streamChunk(`  ${skillGroup.join('  •  ')}\n`);
+        }
+      }
+      await streamChunk('\n\n');
+    }
+
+    // OPTIMIZATION: Stream summary (start AI call in parallel, but don't wait)
+    if (includeSummary) {
+      await streamChunk('PROFESSIONAL SUMMARY\n');
+      await streamChunk('─'.repeat(70) + '\n');
+      await streamChunk('\n');
+      
+      // Send empty chunk to keep cursor visible during AI wait
+      if (onChunk) {
+        onChunk(''); // Keep cursor blinking while waiting for AI
+      }
+      
+      try {
+        const summaryData = await this.generateProfessionalSummary(userId);
+        // Stream summary with word wrapping
+        const summary = summaryData.summary;
+        const words = summary.split(' ');
+        let currentLine = '  ';
+        for (const word of words) {
+          if ((currentLine + word).length <= 68) {
+            currentLine += (currentLine.trim() ? ' ' : '') + word;
+          } else {
+            if (currentLine.trim()) await streamChunk(currentLine + '\n');
+            currentLine = '  ' + word;
+          }
+        }
+        if (currentLine.trim()) await streamChunk(currentLine + '\n');
+        await streamChunk('\n\n');
+      } catch (error) {
+        const fallback = this.generateFallbackSummary(user);
+        await streamChunk('  ' + fallback + '\n\n');
+      }
+    }
+
+    // OPTIMIZATION: Stream experiences - show basic info immediately, enhance with bullets in parallel
+    if (includeExperiences && user.experiences && user.experiences.length > 0) {
+      await streamChunk('PROFESSIONAL EXPERIENCE\n');
+      await streamChunk('─'.repeat(70) + '\n');
+      await streamChunk('\n');
+      
+      // Parse experiences first
+      const experiences = user.experiences.slice(0, 5).map(exp => {
+        try {
+          return typeof exp === 'string' ? JSON.parse(exp) : exp;
+        } catch {
+          return { title: exp, description: '', technologies: [] };
+        }
+      });
+      
+      // OPTIMIZATION: Stream basic info for ALL experiences immediately (no AI delay)
+      for (const exp of experiences) {
+        const title = exp.title || exp.role || 'Project';
+        await streamChunk(`  ${title.toUpperCase()}\n`);
+        await streamChunk('\n');
+        
+        const metaInfo = [];
+        if (exp.duration) metaInfo.push(`Duration: ${exp.duration}`);
+        if (exp.technologies && exp.technologies.length > 0) {
+          const techDisplay = exp.technologies.length > 6 
+            ? `${exp.technologies.slice(0, 6).join(', ')}, +${exp.technologies.length - 6} more`
+            : exp.technologies.join(', ');
+          metaInfo.push(`Technologies: ${techDisplay}`);
+        }
+        if (metaInfo.length > 0) {
+          await streamChunk(`    ${metaInfo.join('  |  ')}\n`);
+        }
+        await streamChunk('\n');
+      }
+      
+      // OPTIMIZATION: Generate bullets in parallel (don't block streaming)
+      // Send empty chunk to keep cursor visible during AI wait
+      if (onChunk) {
+        onChunk(''); // Keep cursor blinking while waiting for AI
+      }
+      
+      const bulletPromises = experiences.map(async (exp, idx) => {
+        try {
+          const bulletsData = await this.suggestBulletPoints(userId, exp);
+          return { idx, bullets: bulletsData.bulletPoints.slice(0, 3) };
+        } catch (error) {
+          return { idx, bullets: this.generateFallbackBullets(exp) };
+        }
+      });
+      
+      // Wait for all bullets, then stream them
+      const bulletResults = await Promise.all(bulletPromises);
+      
+      // Stream bullets for each experience
+      for (let i = 0; i < experiences.length; i++) {
+        const bulletResult = bulletResults.find(r => r.idx === i);
+        if (bulletResult && bulletResult.bullets.length > 0) {
+          // Go back and add bullets after the meta info
+          for (const bullet of bulletResult.bullets) {
+            if (bullet.length > 60) {
+              const words = bullet.split(' ');
+              let currentLine = '    • ';
+              for (const word of words) {
+                if ((currentLine + word).length <= 66) {
+                  currentLine += (currentLine.trim().endsWith('•') ? '' : ' ') + word;
+                } else {
+                  if (currentLine.trim()) await streamChunk(currentLine + '\n');
+                  currentLine = '      ' + word;
+                }
+              }
+              if (currentLine.trim()) await streamChunk(currentLine + '\n');
+            } else {
+              await streamChunk(`    • ${bullet}\n`);
+            }
+          }
+          await streamChunk('\n');
+        }
+      }
+    }
+
+    // Stream education immediately
+    if (includeEducation && user.educationLevel) {
+      await streamChunk('EDUCATION\n');
+      await streamChunk('─'.repeat(70) + '\n');
+      await streamChunk('\n');
+      await streamChunk(`  ${user.educationLevel}\n\n`);
+    }
+
+    // Stream interests immediately
+    if (includeInterests && user.careerInterests && user.careerInterests.length > 0) {
+      await streamChunk('CAREER INTERESTS\n');
+      await streamChunk('─'.repeat(70) + '\n');
+      await streamChunk('\n');
+      await streamChunk(`  ${user.careerInterests.join(', ')}\n\n`);
+    }
+
+    // Stop heartbeat when done
+    stopHeartbeat(heartbeatId);
+
+    return {
+      cvText: cvText.trim(),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
   async generateCVLayout(userId, options = {}) {
     const user = await User.findById(userId);
     if (!user) {

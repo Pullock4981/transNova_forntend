@@ -133,19 +133,38 @@ class AIJobMatchingService {
    */
   async generateKeyReasons(matchedSkills, missingSkills, trackMatch, experienceMatch, userExp, jobExp, matchPercentage) {
     try {
-      const prompt = `Generate 2-4 concise key reasons for a job match with ${matchPercentage}% match score.
+      // OPTIMIZATION: Chain-of-thought reasoning for better accuracy
+      const prompt = `You are a career matching expert. Analyze this job match and provide key reasons using step-by-step reasoning.
 
+STEP 1 - Analyze Skill Match:
 Matched Skills: ${matchedSkills.join(', ') || 'None'}
 Missing Skills: ${missingSkills.join(', ') || 'None'}
-Track Match: ${trackMatch ? 'Yes' : 'No'}
-Experience Match: ${experienceMatch ? 'Yes' : 'No'}
+Skill Match Strength: ${matchedSkills.length > 0 ? 'Strong' : 'Weak'} (${matchedSkills.length} matched)
+
+STEP 2 - Analyze Track Alignment:
+Track Match: ${trackMatch ? 'Yes - Perfect alignment' : 'No - Different track'}
+Impact: ${trackMatch ? 'High positive impact on match' : 'Neutral or negative impact'}
+
+STEP 3 - Analyze Experience Level:
 User Experience: ${userExp}
 Job Requires: ${jobExp}
+Experience Match: ${experienceMatch ? 'Yes - Meets requirement' : 'No - Below requirement'}
+Impact: ${experienceMatch ? 'Positive' : 'Negative'}
 
-Generate reasons in this format:
-- "Matches React, JS, HTML; missing Redux and TypeScript"
-- "Perfect alignment with your preferred career track"
-- "Your Mid experience level meets the Mid requirement"
+STEP 4 - Calculate Overall Match:
+Match Percentage: ${matchPercentage}%
+Primary Factors:
+${matchedSkills.length > 0 ? `- Strong skill overlap (${matchedSkills.length} skills match)` : '- Limited skill overlap'}
+${trackMatch ? '- Track alignment is excellent' : '- Track alignment needs improvement'}
+${experienceMatch ? '- Experience level is appropriate' : '- Experience level may be insufficient'}
+
+STEP 5 - Generate Key Reasons:
+Based on the analysis above, generate 2-4 concise, actionable reasons that explain WHY this match score is ${matchPercentage}%.
+
+Format each reason as:
+- "Matches [X] core skills including [specific skills]; consider learning [missing skills]"
+- "Perfect alignment with your [track] career path"
+- "Your [experience] level [meets/exceeds] the [job requirement]"
 
 Return a JSON object with this structure:
 {
@@ -154,8 +173,16 @@ Return a JSON object with this structure:
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
+      // OPTIMIZATION: Task-specific temperature (moderate for reasoning) and tokens
       const response = await aiService.generateStructuredJSON(prompt, {
-        keyReasons: 'array',
+        type: 'object',
+        properties: {
+          keyReasons: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['keyReasons'],
+      }, {
+        temperature: 0.5, // OPTIMIZATION: Moderate temperature for balanced reasoning
+        maxTokens: 300,   // OPTIMIZATION: Sufficient for 2-4 concise reasons
       });
 
       if (response.keyReasons && Array.isArray(response.keyReasons)) {

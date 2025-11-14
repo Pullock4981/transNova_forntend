@@ -32,9 +32,23 @@ class AIService {
     this.model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   }
 
-  async generateContent(prompt, options = {}) {
-    const { temperature = 0.7, maxTokens = 2048, maxRetries = 3, model } = options;
+  /**
+   * Generate content with optional conversation history
+   * Supports both single prompts and multi-turn conversations
+   * 
+   * @param {String|Array} promptOrMessages - Single prompt string or array of messages [{role, content}]
+   * @param {Object} options - Generation options
+   * @returns {String} Generated content
+   */
+  async generateContent(promptOrMessages, options = {}) {
+    const { temperature = 0.7, maxTokens = 2048, maxRetries = 3, model, skipCache = false } = options;
     const modelToUse = model || this.model;
+    
+    // Convert single prompt to messages array if needed
+    const messages = Array.isArray(promptOrMessages)
+      ? promptOrMessages
+      : [{ role: 'user', content: promptOrMessages }];
+    
     let lastError;
     
     // Retry logic with exponential backoff for rate limits
@@ -42,7 +56,7 @@ class AIService {
       try {
         const completion = await this.openai.chat.completions.create({
           model: modelToUse,
-          messages: [{ role: 'user', content: prompt }],
+          messages,
           temperature,
           max_tokens: maxTokens,
         });
@@ -97,10 +111,96 @@ class AIService {
     throw new Error(`AI generation failed: ${lastError.message}`);
   }
 
-  async generateStructuredJSON(prompt, schema) {
+  /**
+   * Generate streaming content (word-by-word)
+   * Uses OpenAI streaming API for real-time word-by-word responses
+   * 
+   * @param {String|Array} promptOrMessages - Single prompt or message array
+   * @param {Object} options - Generation options
+   * @param {Function} onChunk - Callback for each chunk: (chunk: string) => void
+   * @returns {Promise<String>} Full response
+   */
+  async generateContentStream(promptOrMessages, options = {}, onChunk = null) {
+    const { temperature = 0.7, maxTokens = 2048, model } = options;
+    const modelToUse = model || this.model;
+    
+    // Convert single prompt to messages array if needed
+    const messages = Array.isArray(promptOrMessages)
+      ? promptOrMessages
+      : [{ role: 'user', content: promptOrMessages }];
+    
     try {
-      const structuredPrompt = `${prompt}\n\nReturn valid JSON only, no markdown, no code blocks.`;
-      const response = await this.generateContent(structuredPrompt);
+      const stream = await this.openai.chat.completions.create({
+        model: modelToUse,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: true, // Enable streaming
+      });
+      
+      let fullResponse = '';
+      
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        if (content) {
+          fullResponse += content;
+          // Call callback for each chunk
+          if (onChunk && typeof onChunk === 'function') {
+            onChunk(content);
+          }
+        }
+      }
+      
+      return fullResponse;
+    } catch (error) {
+      console.error('Streaming Error:', error);
+      throw new Error(`AI streaming failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generate structured JSON response with schema validation
+   * 
+   * @param {String|Array} promptOrMessages - Single prompt or message array
+   * @param {Object} schema - Expected JSON schema (for validation)
+   * @param {Object} options - Generation options
+   * @returns {Object} Parsed and validated JSON
+   */
+  async generateStructuredJSON(promptOrMessages, schema = null, options = {}) {
+    try {
+      const prompt = Array.isArray(promptOrMessages)
+        ? promptOrMessages[promptOrMessages.length - 1].content
+        : promptOrMessages;
+      
+      // Add schema instructions if provided
+      let structuredPrompt = Array.isArray(promptOrMessages)
+        ? [...promptOrMessages]
+        : promptOrMessages;
+      
+      if (schema) {
+        const schemaInstructions = `\n\nIMPORTANT: Return valid JSON matching this schema:\n${JSON.stringify(schema, null, 2)}\n\nReturn valid JSON only, no markdown, no code blocks. Ensure all required fields are present.`;
+        
+        if (Array.isArray(structuredPrompt)) {
+          structuredPrompt = [
+            ...structuredPrompt.slice(0, -1),
+            { role: structuredPrompt[structuredPrompt.length - 1].role, content: structuredPrompt[structuredPrompt.length - 1].content + schemaInstructions }
+          ];
+        } else {
+          structuredPrompt = prompt + schemaInstructions;
+        }
+      } else {
+        const jsonInstruction = `\n\nReturn valid JSON only, no markdown, no code blocks.`;
+        if (Array.isArray(structuredPrompt)) {
+          structuredPrompt = [
+            ...structuredPrompt.slice(0, -1),
+            { role: structuredPrompt[structuredPrompt.length - 1].role, content: structuredPrompt[structuredPrompt.length - 1].content + jsonInstruction }
+          ];
+        } else {
+          structuredPrompt = prompt + jsonInstruction;
+        }
+      }
+      
+      const response = await this.generateContent(structuredPrompt, options);
       
       // Clean response (remove markdown code blocks if present)
       let cleaned = response.trim();
@@ -110,19 +210,67 @@ class AIService {
         cleaned = cleaned.replace(/```\n?/g, '');
       }
       
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      
+      // Validate against schema if provided
+      if (schema) {
+        this.validateSchema(parsed, schema);
+      }
+      
+      return parsed;
     } catch (error) {
       console.error('JSON Parsing Error:', error);
       // Try to extract JSON from response
       try {
+        const response = Array.isArray(promptOrMessages)
+          ? ''
+          : promptOrMessages;
         const jsonMatch = response.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          return JSON.parse(jsonMatch[0]);
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (schema) {
+            this.validateSchema(parsed, schema);
+          }
+          return parsed;
         }
       } catch (e) {
         // Ignore
       }
       throw new Error(`Failed to parse AI response: ${error.message}`);
+    }
+  }
+
+  /**
+   * Validate JSON object against schema
+   * 
+   * @param {Object} data - Data to validate
+   * @param {Object} schema - Schema definition
+   * @throws {Error} If validation fails
+   */
+  validateSchema(data, schema) {
+    if (!schema || typeof schema !== 'object') return;
+    
+    // Check required fields
+    if (schema.required && Array.isArray(schema.required)) {
+      for (const field of schema.required) {
+        if (!(field in data)) {
+          throw new Error(`Missing required field: ${field}`);
+        }
+      }
+    }
+    
+    // Check field types
+    if (schema.properties && typeof schema.properties === 'object') {
+      for (const [field, fieldSchema] of Object.entries(schema.properties)) {
+        if (field in data) {
+          const expectedType = fieldSchema.type;
+          const actualType = Array.isArray(data[field]) ? 'array' : typeof data[field];
+          
+          if (expectedType && actualType !== expectedType) {
+            console.warn(`Schema validation warning: Field '${field}' expected type '${expectedType}', got '${actualType}'`);
+          }
+        }
+      }
     }
   }
 }

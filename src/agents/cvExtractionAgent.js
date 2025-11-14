@@ -1,4 +1,5 @@
 const aiService = require('../services/aiService');
+const chromaService = require('../services/chromaService');
 
 /**
  * CV Extraction Agent
@@ -11,7 +12,7 @@ const aiService = require('../services/aiService');
  * - Extract technologies (tech stacks, architectures, systems) from CV
  * - Extract roles/domain/designation (job titles, career domains) from CV
  * - Validate extracted data to filter out non-skill items (school names, years, degrees)
- * - Categorize and deduplicate extracted information
+ * - Categorize and deduplicate extracted information using semantic matching
  * - Infer experience level from CV content
  * - Generate professional summary from CV
  * 
@@ -20,6 +21,169 @@ const aiService = require('../services/aiService');
  *   const extracted = await agent.extractSkillsFromCV(cvText, preferredTrack);
  */
 class CVExtractionAgent {
+  /**
+   * Initialize ChromaDB for semantic matching
+   */
+  async initialize() {
+    if (!chromaService.initialized) {
+      await chromaService.initialize();
+    }
+  }
+
+  /**
+   * Normalize skills using semantic matching
+   * Finds similar skills and normalizes them (e.g., "ReactJS" -> "React")
+   * 
+   * @param {Array} skills - Array of skill strings
+   * @returns {Array} Normalized and deduplicated skills
+   */
+  async normalizeSkillsWithEmbeddings(skills) {
+    if (!Array.isArray(skills) || skills.length === 0) return skills;
+    
+    try {
+      await this.initialize();
+      
+      if (!chromaService.collection) {
+        // ChromaDB not available, use basic normalization
+        return this.basicNormalizeSkills(skills);
+      }
+
+      const normalized = [];
+      const processed = new Set();
+      
+      for (const skill of skills) {
+        if (!skill || typeof skill !== 'string') continue;
+        
+        const trimmed = skill.trim();
+        if (trimmed.length < 2) continue;
+        
+        const lowerSkill = trimmed.toLowerCase();
+        
+        // Skip if already processed
+        if (processed.has(lowerSkill)) continue;
+        
+        try {
+          // Search for similar skills using semantic matching
+          const similarSkills = await chromaService.searchSimilarSkills(trimmed, 5);
+          
+          // Find the most common/canonical version
+          let canonicalSkill = trimmed;
+          let foundSimilar = false;
+          
+          // Check if any similar skill is already in our normalized list
+          for (const similar of similarSkills) {
+            if (similar.distance < 0.2 && similar.skill) { // Very similar (distance < 0.2)
+              const similarLower = similar.skill.toLowerCase();
+              
+              // Check if we already have this skill in normalized list
+              const existing = normalized.find(s => s.toLowerCase() === similarLower);
+              if (existing) {
+                canonicalSkill = existing; // Use existing canonical version
+                foundSimilar = true;
+                break;
+              }
+              
+              // Use the similar skill as canonical if it's shorter/more standard
+              if (similar.skill.length <= trimmed.length) {
+                canonicalSkill = similar.skill;
+                foundSimilar = true;
+              }
+            }
+          }
+          
+          // Add canonical skill if not already present
+          const canonicalLower = canonicalSkill.toLowerCase();
+          if (!normalized.some(s => s.toLowerCase() === canonicalLower)) {
+            normalized.push(canonicalSkill);
+          }
+          
+          processed.add(lowerSkill);
+          if (foundSimilar) {
+            processed.add(canonicalLower);
+          }
+          
+        } catch (error) {
+          // If semantic search fails, use basic normalization
+          const basicNormalized = this.basicNormalizeSkill(trimmed);
+          const basicLower = basicNormalized.toLowerCase();
+          if (!normalized.some(s => s.toLowerCase() === basicLower)) {
+            normalized.push(basicNormalized);
+          }
+          processed.add(basicLower);
+        }
+      }
+      
+      return normalized;
+    } catch (error) {
+      console.warn('Semantic skill normalization error:', error.message);
+      // Fallback to basic normalization
+      return this.basicNormalizeSkills(skills);
+    }
+  }
+
+  /**
+   * Basic skill normalization without embeddings
+   * Handles common variations (React.js -> React, JavaScript -> JS, etc.)
+   */
+  basicNormalizeSkills(skills) {
+    const normalized = [];
+    const seen = new Set();
+    
+    for (const skill of skills) {
+      if (!skill || typeof skill !== 'string') continue;
+      
+      const normalizedSkill = this.basicNormalizeSkill(skill.trim());
+      const lower = normalizedSkill.toLowerCase();
+      
+      if (!seen.has(lower)) {
+        normalized.push(normalizedSkill);
+        seen.add(lower);
+      }
+    }
+    
+    return normalized;
+  }
+
+  /**
+   * Normalize a single skill
+   */
+  basicNormalizeSkill(skill) {
+    if (!skill) return skill;
+    
+    // Common normalizations
+    const normalizations = {
+      'reactjs': 'React',
+      'react.js': 'React',
+      'react js': 'React',
+      'javascript': 'JavaScript',
+      'js': 'JavaScript',
+      'typescript': 'TypeScript',
+      'ts': 'TypeScript',
+      'nodejs': 'Node.js',
+      'node.js': 'Node.js',
+      'node js': 'Node.js',
+      'html5': 'HTML',
+      'css3': 'CSS',
+      'vuejs': 'Vue.js',
+      'vue.js': 'Vue.js',
+      'vue js': 'Vue.js',
+      'nextjs': 'Next.js',
+      'next.js': 'Next.js',
+      'next js': 'Next.js',
+    };
+    
+    const lower = skill.toLowerCase();
+    if (normalizations[lower]) {
+      return normalizations[lower];
+    }
+    
+    // Capitalize first letter if all lowercase
+    if (skill === skill.toLowerCase() && skill.length > 0) {
+      return skill.charAt(0).toUpperCase() + skill.slice(1);
+    }
+    
+    return skill;
+  }
   /**
    * Extract structured information from CV text
    * 
@@ -80,6 +244,62 @@ FOR ROLES/DOMAIN/DESIGNATION:
 6. Return the primary role/designation as the FIRST item in the "roles" array, followed by other related roles
 7. If the CV mentions "Seeking position as..." or "Looking for...", that can also indicate the desired role
 
+FEW-SHOT EXAMPLES (Learn from these correct extractions):
+
+Example 1 - CV Text:
+"SKILLS: JavaScript, React, Node.js, Express, MongoDB, Git, Firebase, MERN Stack
+TOOLS: Git, Figma, VS Code, Postman
+Experience: Frontend Developer at Tech Corp (2020-2023)"
+
+Correct Extraction:
+{
+  "skills": ["JavaScript", "React", "Node.js", "Express"],
+  "tools": ["Git", "Figma", "VS Code", "Postman", "Firebase"],
+  "technologies": ["MERN Stack"],
+  "roles": ["Frontend Developer"],
+  "primaryRole": "Frontend Developer",
+  "experienceLevel": "Mid",
+  "summary": "Experienced Frontend Developer with expertise in React and Node.js",
+  "confidence": 0.9
+}
+Note: MongoDB excluded (database), MERN Stack in technologies (not tools), Firebase in tools (platform)
+
+Example 2 - CV Text:
+"STRENGTHS AND EXPERTISE: P&L Management, Business Development, Strategic Planning, Financial Reporting, Team Leadership, Communication
+Tools Used: Excel, Notion, Slack
+Current Role: Business Operations Manager"
+
+Correct Extraction:
+{
+  "skills": ["P&L Management", "Business Development", "Strategic Planning", "Financial Reporting", "Team Leadership", "Communication"],
+  "tools": ["Excel", "Notion", "Slack"],
+  "technologies": [],
+  "roles": ["Business Operations Manager"],
+  "primaryRole": "Business Operations Manager",
+  "experienceLevel": "Mid",
+  "summary": "Business Operations Manager with expertise in strategic planning and team leadership",
+  "confidence": 0.9
+}
+Note: All business/management/soft skills extracted from "STRENGTHS AND EXPERTISE" section
+
+Example 3 - CV Text:
+"Technical Skills: Python, Django, PostgreSQL, Docker, AWS
+Development Tools: Git, GitHub, VS Code
+Tech Stack: Full Stack Development, Microservices Architecture"
+
+Correct Extraction:
+{
+  "skills": ["Python", "Django"],
+  "tools": ["Git", "GitHub", "VS Code", "Docker", "AWS"],
+  "technologies": ["Full Stack Development", "Microservices Architecture"],
+  "roles": [],
+  "primaryRole": null,
+  "experienceLevel": "Junior",
+  "summary": "Full stack developer with Python and Django expertise",
+  "confidence": 0.85
+}
+Note: PostgreSQL excluded (database), Full Stack Development in technologies (not tools)
+
 Extract and return JSON with this exact structure:
 {
   "skills": ["skill1", "skill2", "skill3"],
@@ -132,7 +352,24 @@ Guidelines:
 Return ONLY valid JSON, no markdown, no explanations.`;
 
     try {
-      const extracted = await aiService.generateStructuredJSON(prompt);
+      // OPTIMIZATION: Task-specific temperature (lower for extraction = more deterministic)
+      const extracted = await aiService.generateStructuredJSON(prompt, {
+        type: 'object',
+        properties: {
+          skills: { type: 'array', items: { type: 'string' } },
+          tools: { type: 'array', items: { type: 'string' } },
+          technologies: { type: 'array', items: { type: 'string' } },
+          roles: { type: 'array', items: { type: 'string' } },
+          primaryRole: { type: 'string' },
+          experienceLevel: { type: 'string' },
+          summary: { type: 'string' },
+          confidence: { type: 'number' },
+        },
+        required: ['skills', 'tools', 'technologies', 'roles', 'experienceLevel', 'summary'],
+      }, {
+        temperature: 0.2, // OPTIMIZATION: Lower temperature for more accurate extraction
+        maxTokens: 2000,  // OPTIMIZATION: Sufficient tokens for structured extraction
+      });
       
       // Clean and deduplicate data
       let skills = Array.isArray(extracted.skills) ? extracted.skills : [];
@@ -471,6 +708,18 @@ Return ONLY valid JSON, no markdown, no explanations.`;
       // Final deduplication
       technologies = [...new Set(technologies)];
       tools = [...new Set(tools)];
+      
+      // OPTIMIZATION: Use semantic matching to normalize and deduplicate skills
+      // This improves accuracy by finding similar skills (e.g., "ReactJS" -> "React")
+      try {
+        console.log(`🔍 Normalizing ${skills.length} skills using semantic matching...`);
+        skills = await this.normalizeSkillsWithEmbeddings(skills);
+        console.log(`✅ Normalized to ${skills.length} unique skills`);
+      } catch (error) {
+        console.warn('Semantic skill normalization failed, using basic normalization:', error.message);
+        // Fallback to basic normalization
+        skills = this.basicNormalizeSkills(skills);
+      }
       
       // Extract primary role (first role in array, or from primaryRole field)
       const primaryRole = extracted.primaryRole || (roles.length > 0 ? roles[0] : null);

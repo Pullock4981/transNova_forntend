@@ -258,12 +258,15 @@ class SkillGapAnalysisAgent {
     try {
       const skillNames = prioritizedSkills.map(ps => ps.skill);
       
-      // Use regex for case-insensitive matching
+      // OPTIMIZATION: Use .select() and .lean() for faster queries
       const resources = await Resource.find({
         $or: skillNames.map(skill => ({
           relatedSkills: { $regex: new RegExp(skill, 'i') }
         }))
-      }).limit(20);
+      })
+      .select('title platform cost relatedSkills url')
+      .lean()
+      .limit(20);
 
       return resources;
     } catch (error) {
@@ -284,7 +287,68 @@ class SkillGapAnalysisAgent {
     try {
       const skillsList = prioritizedSkills.map(ps => ps.skill).join(', ');
       
+      // OPTIMIZATION: Few-shot examples for better learning path generation
       const prompt = `You are a career mentor helping a user learn new skills for job opportunities.
+
+FEW-SHOT EXAMPLES (Learn from these correct learning path generations):
+
+Example 1 - User Profile:
+- Current Skills: JavaScript, HTML, CSS
+- Experience Level: Junior
+- Preferred Track: Frontend Development
+- Missing Skill: React
+
+Correct Learning Path:
+{
+  "skill": "React",
+  "resources": [
+    {"name": "React Official Documentation", "type": "Documentation", "url": "https://react.dev"},
+    {"name": "React - The Complete Guide", "type": "Video Course", "url": "https://udemy.com/react-complete-guide"},
+    {"name": "React Tutorial on freeCodeCamp", "type": "Interactive Tutorial", "url": "https://freecodecamp.org"}
+  ],
+  "estimatedTime": "3-4 weeks",
+  "prerequisites": ["JavaScript", "HTML", "CSS"],
+  "projectIdeas": [
+    "Build a todo app with React hooks and state management",
+    "Create a weather app using React and a weather API",
+    "Develop a portfolio website using React components"
+  ],
+  "learningPath": [
+    "Week 1: Learn React fundamentals (components, JSX, props)",
+    "Week 2: Master React hooks (useState, useEffect, useContext)",
+    "Week 3: Build a small project (todo app or calculator)",
+    "Week 4: Add advanced features (routing, state management)"
+  ]
+}
+
+Example 2 - User Profile:
+- Current Skills: Python, SQL
+- Experience Level: Fresher
+- Preferred Track: Data Science
+- Missing Skill: Machine Learning
+
+Correct Learning Path:
+{
+  "skill": "Machine Learning",
+  "resources": [
+    {"name": "Machine Learning Course by Andrew Ng", "type": "Video Course", "url": "https://coursera.org/ml"},
+    {"name": "Scikit-learn Documentation", "type": "Documentation", "url": "https://scikit-learn.org"},
+    {"name": "Kaggle Learn - Machine Learning", "type": "Interactive Tutorial", "url": "https://kaggle.com/learn"}
+  ],
+  "estimatedTime": "6-8 weeks",
+  "prerequisites": ["Python", "Mathematics (Linear Algebra, Statistics)"],
+  "projectIdeas": [
+    "Build a house price prediction model using linear regression",
+    "Create a spam email classifier using Naive Bayes",
+    "Develop a recommendation system for movies or products"
+  ],
+  "learningPath": [
+    "Week 1-2: Learn ML fundamentals and mathematics basics",
+    "Week 3-4: Study supervised learning (regression, classification)",
+    "Week 5-6: Practice with real datasets on Kaggle",
+    "Week 7-8: Build a complete ML project from scratch"
+  ]
+}
 
 User Profile:
 - Current Skills: ${(user.skills || []).join(', ') || 'None'}
@@ -296,39 +360,84 @@ Target Job: ${job ? `${job.title} at ${job.company}` : 'General career developme
 Missing Skills: ${skillsList}
 
 For each missing skill, provide:
-1. Best learning resources (courses, tutorials, documentation) with URLs
-2. Estimated learning time (realistic, e.g., "2-3 weeks", "1 month")
-3. Prerequisites (what they should know first)
-4. Project ideas to practice (2-3 specific projects)
-5. Learning path (step-by-step approach)
+1. Best learning resources (courses, tutorials, documentation) with URLs (3-5 resources)
+2. Estimated learning time (realistic, e.g., "2-3 weeks", "1 month", "6-8 weeks")
+3. Prerequisites (what they should know first - be specific)
+4. Project ideas to practice (2-3 specific, actionable projects)
+5. Learning path (step-by-step approach with weekly milestones)
+
+Guidelines:
+- Make learning time realistic based on user's experience level (${user.experienceLevel || 'Fresher'})
+- Provide actual, accessible resources (official docs, popular courses, free tutorials)
+- Prerequisites should be specific skills, not vague concepts
+- Project ideas should be achievable and portfolio-worthy
+- Learning path should progress from basics to advanced, with clear milestones
+- Align recommendations with ${user.preferredTrack || 'general'} track
+- Focus on practical, actionable advice aligned with SDG 8 (decent work and economic growth) goals
 
 Return JSON:
 {
   "recommendations": [
     {
-      "skill": "TypeScript",
+      "skill": "SkillName",
       "resources": [
-        {"name": "TypeScript Handbook", "type": "Documentation", "url": "https://www.typescriptlang.org/docs/"},
-        {"name": "TypeScript Course", "type": "Video Course", "url": "https://example.com"}
+        {"name": "Resource Name", "type": "Documentation|Video Course|Interactive Tutorial|Book", "url": "https://example.com"}
       ],
       "estimatedTime": "2-3 weeks",
-      "prerequisites": ["JavaScript"],
+      "prerequisites": ["Prerequisite1", "Prerequisite2"],
       "projectIdeas": [
-        "Convert existing JavaScript project to TypeScript",
-        "Build a TypeScript-based calculator app"
+        "Specific project idea 1",
+        "Specific project idea 2",
+        "Specific project idea 3"
       ],
       "learningPath": [
-        "Week 1: Learn basic types and interfaces",
-        "Week 2: Practice with functions and classes",
-        "Week 3: Build a project"
+        "Week 1: Specific milestone",
+        "Week 2: Specific milestone",
+        "Week 3: Specific milestone"
       ]
     }
   ]
 }
 
-Focus on practical, actionable advice aligned with SDG 8 (decent work and economic growth) goals.`;
+Return ONLY valid JSON, no markdown, no code blocks.`;
 
-      const response = await aiService.generateStructuredJSON(prompt);
+      // OPTIMIZATION: Schema validation and task-specific temperature/tokens
+      const response = await aiService.generateStructuredJSON(prompt, {
+        type: 'object',
+        properties: {
+          recommendations: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                skill: { type: 'string' },
+                resources: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      type: { type: 'string' },
+                      url: { type: 'string' },
+                    },
+                    required: ['name', 'type', 'url'],
+                  },
+                },
+                estimatedTime: { type: 'string' },
+                prerequisites: { type: 'array', items: { type: 'string' } },
+                projectIdeas: { type: 'array', items: { type: 'string' } },
+                learningPath: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['skill', 'resources', 'estimatedTime', 'prerequisites', 'projectIdeas', 'learningPath'],
+            },
+          },
+        },
+        required: ['recommendations'],
+      }, {
+        temperature: 0.6, // OPTIMIZATION: Moderate temperature for balanced learning recommendations
+        maxTokens: 1500,   // OPTIMIZATION: Sufficient for comprehensive learning paths
+      });
+      
       return response.recommendations || [];
     } catch (error) {
       console.error('AI Learning Paths Error:', error);

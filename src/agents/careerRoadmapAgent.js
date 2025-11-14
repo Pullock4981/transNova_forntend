@@ -108,13 +108,51 @@ class CareerRoadmapAgent {
         });
       }
 
-      // Get similar jobs to understand requirements
-      const similarJobs = await Job.find({
-        $or: [
-          { title: { $regex: new RegExp(targetRole, 'i') } },
-          { track: { $regex: new RegExp(targetRole, 'i') } },
-        ],
-      }).limit(10);
+      // OPTIMIZATION: Use semantic search instead of regex for better role matching
+      let similarJobs = [];
+      try {
+        if (chromaService.collection) {
+          // Use semantic search to find similar roles
+          const roleQueryResults = await chromaService.collection.query({
+            queryTexts: [targetRole],
+            nResults: 10,
+            where: { type: 'job' },
+          });
+
+          if (roleQueryResults.metadatas && roleQueryResults.metadatas[0]) {
+            const jobIds = roleQueryResults.metadatas[0]
+              .map(meta => meta.jobId)
+              .filter(Boolean);
+            
+            if (jobIds.length > 0) {
+              similarJobs = await Job.find({ _id: { $in: jobIds } })
+                .select('title company requiredSkills experienceLevel track')
+                .lean()
+                .limit(10);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('Semantic role search failed, using regex fallback:', error.message);
+      }
+
+      // Fallback to regex if semantic search didn't find enough jobs
+      if (similarJobs.length < 5) {
+        const regexJobs = await Job.find({
+          $or: [
+            { title: { $regex: new RegExp(targetRole, 'i') } },
+            { track: { $regex: new RegExp(targetRole, 'i') } },
+          ],
+        })
+        .select('title company requiredSkills experienceLevel track')
+        .lean()
+        .limit(10);
+        
+        // Merge and deduplicate
+        const existingIds = new Set(similarJobs.map(j => j._id.toString()));
+        const additionalJobs = regexJobs.filter(j => !existingIds.has(j._id.toString()));
+        similarJobs = [...similarJobs, ...additionalJobs].slice(0, 10);
+      }
 
       const commonRequiredSkills = this.extractCommonSkills(similarJobs);
       const userSkills = user.skills || [];
@@ -293,7 +331,134 @@ class CareerRoadmapAgent {
    */
   async generateAIRoadmap(user, targetRole, timeframe, availableHours, gapAnalysis, targetJobRequirements) {
     try {
+      // OPTIMIZATION: Few-shot examples for better roadmap generation
       const prompt = `You are an expert career mentor creating a personalized ${timeframe}-month career roadmap.
+
+FEW-SHOT EXAMPLES (Learn from these correct roadmap generations):
+
+Example 1 - 6-Month Roadmap for Frontend Developer:
+User: Fresher, Skills: HTML, CSS, JavaScript
+Target: Frontend Developer
+
+Correct Roadmap:
+{
+  "targetRole": "Frontend Developer",
+  "timeframe": 6,
+  "phases": [
+    {
+      "month": 1,
+      "title": "Phase 1: React Fundamentals",
+      "objectives": [
+        "Master React components and JSX syntax",
+        "Understand props and state management",
+        "Build basic interactive components"
+      ],
+      "skillsToLearn": ["React", "JSX", "Props", "State"],
+      "projects": [
+        {
+          "name": "Todo List App",
+          "description": "Build a functional todo list with add, edit, delete, and filter features using React",
+          "technologies": ["React", "CSS", "JavaScript"],
+          "difficulty": "Beginner"
+        }
+      ],
+      "milestones": [
+        "Complete React official tutorial",
+        "Build first React component",
+        "Deploy todo app to GitHub Pages"
+      ],
+      "estimatedHours": 40
+    },
+    {
+      "month": 2,
+      "title": "Phase 2: Advanced React Concepts",
+      "objectives": [
+        "Master React Hooks (useState, useEffect, useContext)",
+        "Learn component lifecycle and optimization",
+        "Implement routing with React Router"
+      ],
+      "skillsToLearn": ["React Hooks", "React Router", "Context API"],
+      "projects": [
+        {
+          "name": "Weather Dashboard",
+          "description": "Create a weather app with multiple city search, using React Router for navigation and API integration",
+          "technologies": ["React", "React Router", "API Integration", "CSS"],
+          "difficulty": "Intermediate"
+        }
+      ],
+      "milestones": [
+        "Implement hooks in all components",
+        "Add routing to weather app",
+        "Optimize component performance"
+      ],
+      "estimatedHours": 40
+    }
+  ],
+  "applicationTimeline": "Start applying in month 5",
+  "portfolioTips": [
+    "Showcase 3-4 completed projects with live demos",
+    "Include code quality: clean, commented, and well-structured",
+    "Add project descriptions explaining your thought process",
+    "Include GitHub links with active repositories",
+    "Add testimonials or metrics (e.g., 'Improved performance by 40%')"
+  ],
+  "interviewPrep": [
+    "Practice explaining your projects and technical decisions",
+    "Study common React interview questions (hooks, lifecycle, state management)",
+    "Prepare for coding challenges on platforms like LeetCode",
+    "Practice system design questions for frontend architecture",
+    "Prepare questions to ask interviewers about team and tech stack"
+  ]
+}
+
+Example 2 - 3-Month Roadmap for Data Analyst:
+User: Junior, Skills: Python, SQL, Excel
+Target: Data Analyst
+
+Correct Roadmap:
+{
+  "targetRole": "Data Analyst",
+  "timeframe": 3,
+  "phases": [
+    {
+      "month": 1,
+      "title": "Phase 1: Data Analysis Foundations",
+      "objectives": [
+        "Master pandas for data manipulation",
+        "Learn data visualization with matplotlib and seaborn",
+        "Practice with real datasets"
+      ],
+      "skillsToLearn": ["Pandas", "Matplotlib", "Seaborn", "Data Cleaning"],
+      "projects": [
+        {
+          "name": "Sales Data Analysis",
+          "description": "Analyze sales data to identify trends, top products, and revenue patterns using pandas and visualization",
+          "technologies": ["Python", "Pandas", "Matplotlib", "Jupyter"],
+          "difficulty": "Beginner"
+        }
+      ],
+      "milestones": [
+        "Complete pandas tutorial",
+        "Create first data visualization",
+        "Publish analysis on GitHub"
+      ],
+      "estimatedHours": 30
+    }
+  ],
+  "applicationTimeline": "Start applying in month 2",
+  "portfolioTips": [
+    "Create a portfolio website showcasing your analyses",
+    "Include interactive visualizations using Tableau or Power BI",
+    "Document your analysis process and insights",
+    "Share your work on LinkedIn and Kaggle"
+  ],
+  "interviewPrep": [
+    "Practice SQL queries for data extraction",
+    "Prepare to explain your analysis methodology",
+    "Study statistical concepts (mean, median, correlation)",
+    "Practice presenting data insights clearly"
+  ]
+}
 
 USER PROFILE:
 - Current Skills: ${(user.skills || []).join(', ') || 'None listed'}
@@ -321,28 +486,31 @@ Create a comprehensive, actionable roadmap with:
 1. ${timeframe} monthly phases (one phase per month)
 2. Each phase must include:
    - month: (1, 2, 3, etc.)
-   - title: Descriptive phase title (e.g., "Foundation Building", "Advanced Concepts")
-   - objectives: 2-4 specific learning objectives
+   - title: Descriptive phase title (e.g., "Phase 1: Foundation Building", "Phase 2: Advanced Concepts")
+   - objectives: 2-4 specific, measurable learning objectives
    - skillsToLearn: Specific skills/technologies to learn in this phase
    - projects: 1-2 project ideas with:
      * name: Project name
-     * description: What to build
-     * technologies: Technologies to use
+     * description: Detailed description of what to build (2-3 sentences)
+     * technologies: Technologies to use (array)
      * difficulty: Beginner/Intermediate/Advanced
-   - milestones: 2-3 key milestones to achieve
-   - estimatedHours: Total hours for this phase (based on ${availableHours} hours/week)
+   - milestones: 2-3 key milestones to achieve (specific, measurable)
+   - estimatedHours: Total hours for this phase (based on ${availableHours} hours/week, typically ${availableHours * 4} hours/month)
 
 3. Application Timeline: When to start applying (e.g., "Start applying in month ${Math.max(1, timeframe - 1)}")
-4. Portfolio Tips: 3-5 tips for building a strong portfolio
-5. Interview Prep: 3-5 interview preparation tips
+4. Portfolio Tips: 3-5 actionable tips for building a strong portfolio
+5. Interview Prep: 3-5 interview preparation tips specific to ${targetRole}
 
-IMPORTANT:
-- Make it realistic and achievable
-- Focus on practical, hands-on learning
+IMPORTANT GUIDELINES:
+- Make it realistic and achievable for ${user.experienceLevel || 'Fresher'} level
+- Focus on practical, hands-on learning with real projects
+- Progress from basics to advanced concepts logically
+- Each phase should build on the previous one
+- Projects should be portfolio-worthy and demonstrate skills
+- Estimated hours should be realistic (${availableHours} hours/week = ${availableHours * 4} hours/month)
 - Align with SDG 8 goals (decent work and economic growth)
-- Consider the user's current skill level
-- Progress from basics to advanced concepts
-- Include real-world projects
+- Consider the user's current skill level: ${user.experienceLevel || 'Fresher'}
+- Include real-world, industry-relevant projects
 
 Return JSON:
 {
@@ -363,15 +531,59 @@ Return JSON:
         }
       ],
       "milestones": ["milestone1", "milestone2"],
-      "estimatedHours": 40
+      "estimatedHours": ${availableHours * 4}
     }
   ],
   "applicationTimeline": "Start applying in month ${Math.max(1, timeframe - 1)}",
   "portfolioTips": ["tip1", "tip2", "tip3"],
   "interviewPrep": ["prep1", "prep2", "prep3"]
-}`;
+}
 
-      const roadmapData = await aiService.generateStructuredJSON(prompt);
+Return ONLY valid JSON, no markdown, no code blocks.`;
+
+      // OPTIMIZATION: Schema validation and task-specific temperature/tokens
+      const roadmapData = await aiService.generateStructuredJSON(prompt, {
+        type: 'object',
+        properties: {
+          targetRole: { type: 'string' },
+          timeframe: { type: 'number' },
+          phases: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                month: { type: 'number' },
+                title: { type: 'string' },
+                objectives: { type: 'array', items: { type: 'string' } },
+                skillsToLearn: { type: 'array', items: { type: 'string' } },
+                projects: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      description: { type: 'string' },
+                      technologies: { type: 'array', items: { type: 'string' } },
+                      difficulty: { type: 'string' },
+                    },
+                    required: ['name', 'description', 'technologies', 'difficulty'],
+                  },
+                },
+                milestones: { type: 'array', items: { type: 'string' } },
+                estimatedHours: { type: 'number' },
+              },
+              required: ['month', 'title', 'objectives', 'skillsToLearn', 'projects', 'milestones', 'estimatedHours'],
+            },
+          },
+          applicationTimeline: { type: 'string' },
+          portfolioTips: { type: 'array', items: { type: 'string' } },
+          interviewPrep: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['targetRole', 'timeframe', 'phases', 'applicationTimeline', 'portfolioTips', 'interviewPrep'],
+      }, {
+        temperature: 0.7, // OPTIMIZATION: Higher temperature for creative roadmap generation
+        maxTokens: 2500,   // OPTIMIZATION: Sufficient for comprehensive roadmap with multiple phases
+      });
 
       // Validate structure
       if (!roadmapData.phases || !Array.isArray(roadmapData.phases)) {

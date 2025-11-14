@@ -8,6 +8,7 @@ const {
   cvExtractionAgent
 } = require('../agents');
 const aiService = require('../services/aiService');
+const aiJobMatchingService = require('../services/aiJobMatchingService');
 const chromaService = require('../services/chromaService');
 const pdfService = require('../services/pdfService');
 const multer = require('multer');
@@ -98,13 +99,23 @@ const verifyTools = async (req, res, next) => {
  * Get enhanced job match with AI analysis
  * GET /api/ai/job-match/:jobId
  */
+/**
+ * Get enhanced job match with embeddings
+ * GET /api/ai/job-match/:jobId
+ * OPTIMIZED: Now uses embeddings for semantic matching
+ */
 const getEnhancedJobMatch = async (req, res, next) => {
   try {
     const { jobId } = req.params;
     const userId = req.user.userId;
 
-    const user = await User.findById(userId);
-    const job = await Job.findById(jobId);
+    // OPTIMIZATION: Use .select() and .lean() for faster queries
+    const [user, job] = await Promise.all([
+      User.findById(userId)
+        .select('_id fullName email skills experienceLevel preferredTrack careerInterests')
+        .lean(),
+      Job.findById(jobId).lean(),
+    ]);
 
     if (!job) {
       return res.status(404).json({
@@ -120,68 +131,56 @@ const getEnhancedJobMatch = async (req, res, next) => {
       });
     }
 
-    // Calculate match
-    const matchedSkills = user.skills.filter(userSkill =>
-      job.requiredSkills.some(
-        jobSkill => userSkill.toLowerCase() === jobSkill.toLowerCase()
-      )
-    );
-
-    const missingSkills = job.requiredSkills.filter(
-      jobSkill => !user.skills.some(
-        userSkill => userSkill.toLowerCase() === jobSkill.toLowerCase()
-      )
-    );
-
-    const matchPercentage = Math.round(
-      (matchedSkills.length / job.requiredSkills.length) * 100
-    );
-
-    // Get AI explanation
-    const prompt = `Analyze job match and provide explanation:
-
-User Skills: ${user.skills.join(', ') || 'None'}
-Job Title: ${job.title}
-Job Required Skills: ${job.requiredSkills.join(', ')}
-Matched Skills: ${matchedSkills.join(', ') || 'None'}
-Missing Skills: ${missingSkills.join(', ') || 'None'}
-Match Percentage: ${matchPercentage}%
-User Experience Level: ${user.experienceLevel}
-Job Experience Level: ${job.experienceLevel}
-
-Provide:
-1. Why this is a ${matchPercentage}% match
-2. What makes user qualified
-3. What's missing
-4. Where to apply (LinkedIn, BDjobs, Glassdoor, etc.)
-5. Application tips
-
-Return JSON:
-{
-  "matchPercentage": ${matchPercentage},
-  "explanation": "Detailed explanation in 2-3 sentences",
-  "strengths": ["strength1", "strength2"],
-  "gaps": ["gap1", "gap2"],
-  "suggestedPlatforms": ["LinkedIn", "BDjobs", "Glassdoor"],
-  "applicationTips": ["tip1", "tip2"]
-}`;
-
-    let aiAnalysis;
+    // OPTIMIZATION: Use AI-powered matching with embeddings for accurate semantic matching
+    let matchAnalysis;
     try {
-      aiAnalysis = await aiService.generateStructuredJSON(prompt);
+      console.log(`🔍 Using embeddings for enhanced job match: ${job.title}`);
+      matchAnalysis = await aiJobMatchingService.analyzeJobMatch(user, job, {
+        skipEmbedding: false,  // Use embeddings for semantic matching
+        skipAIReasons: false   // Use AI for key reasons
+      });
     } catch (error) {
-      console.error('AI Analysis Error:', error);
-      aiAnalysis = {
-        explanation: `You match ${matchPercentage}% of required skills. ${matchedSkills.length > 0 ? `You have strong skills in ${matchedSkills.join(', ')}.` : ''} ${missingSkills.length > 0 ? `Consider learning ${missingSkills.slice(0, 3).join(', ')}.` : ''}`,
-        strengths: matchedSkills,
-        gaps: missingSkills,
-        suggestedPlatforms: ['LinkedIn', 'BDjobs', 'Glassdoor'],
-        applicationTips: [
-          'Tailor your resume to highlight relevant skills',
-          'Write a compelling cover letter',
-          'Prepare for technical interviews',
+      console.error('Embedding-based match analysis error:', error);
+      // Fallback to simple matching if embeddings fail
+      const matchedSkills = user.skills.filter(userSkill =>
+        job.requiredSkills.some(
+          jobSkill => userSkill.toLowerCase() === jobSkill.toLowerCase()
+        )
+      );
+      const missingSkills = job.requiredSkills.filter(
+        jobSkill => !user.skills.some(
+          userSkill => userSkill.toLowerCase() === jobSkill.toLowerCase()
+        )
+      );
+      const matchPercentage = Math.round(
+        (matchedSkills.length / job.requiredSkills.length) * 100
+      );
+      
+      matchAnalysis = {
+        matchPercentage,
+        matchedSkills,
+        missingSkills,
+        matchScore: matchPercentage / 100,
+        embeddingBased: false,
+        keyReasons: [`Matches ${matchedSkills.length} of ${job.requiredSkills.length} required skills`],
+        applicationPlatforms: [
+          { name: 'LinkedIn', url: 'https://www.linkedin.com/jobs' },
+          { name: 'BDjobs', url: 'https://www.bdjobs.com' },
         ],
       };
+    }
+
+    if (!matchAnalysis) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          matchPercentage: 0,
+          matchedSkills: [],
+          missingSkills: job.requiredSkills || [],
+          message: 'No match found',
+          embeddingBased: false,
+        },
+      });
     }
 
     // Get skill gap analysis using Skill Gap Analysis Agent
@@ -200,7 +199,7 @@ Return JSON:
       } catch (fallbackError) {
         console.error('Fallback Gap Analysis Error:', fallbackError);
         gapAnalysis = {
-          missingSkills,
+          missingSkills: matchAnalysis.missingSkills || [],
           recommendations: [],
           message: 'Unable to generate detailed gap analysis',
         };
@@ -210,10 +209,14 @@ Return JSON:
     res.status(200).json({
       success: true,
       data: {
-        matchPercentage,
-        matchedSkills,
-        missingSkills,
-        aiAnalysis,
+        matchPercentage: matchAnalysis.matchPercentage || 0,
+        matchedSkills: matchAnalysis.matchedSkills || [],
+        missingSkills: matchAnalysis.missingSkills || [],
+        matchScore: matchAnalysis.matchScore,
+        embeddingSimilarity: matchAnalysis.embeddingSimilarity,
+        embeddingBased: matchAnalysis.embeddingBased || false,
+        keyReasons: matchAnalysis.keyReasons || [],
+        applicationPlatforms: matchAnalysis.applicationPlatforms || [],
         gapAnalysis,
         job: {
           _id: job._id,
@@ -357,6 +360,64 @@ const chatWithCareerBot = async (req, res, next) => {
 };
 
 /**
+ * Chat with CareerBot (Streaming - word-by-word)
+ * POST /api/ai/chat-stream
+ * Uses Server-Sent Events (SSE) for real-time streaming
+ */
+const chatWithCareerBotStream = async (req, res, next) => {
+  try {
+    const { message } = req.body;
+    const userId = req.user.userId;
+
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message is required',
+      });
+    }
+
+    // Set headers for Server-Sent Events (SSE)
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.setHeader('Access-Control-Allow-Origin', '*'); // CORS for SSE
+
+    // Stream response word-by-word
+    try {
+      await careerMentorAgent.getContextualResponseStream(
+        userId,
+        message,
+        (chunk) => {
+          // Send each chunk as SSE event
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+        }
+      );
+
+      // Send completion signal
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      res.end();
+    } catch (error) {
+      // Send error as SSE event
+      res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    // If headers not sent yet, send JSON error
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    // Otherwise, send error as SSE
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    res.end();
+    next(error);
+  }
+};
+
+/**
  * Upload and extract CV from PDF
  * POST /api/ai/upload-cv
  */
@@ -436,6 +497,61 @@ const generateProfessionalSummary = async (req, res, next) => {
 };
 
 /**
+ * Generate professional summary with streaming
+ * POST /api/ai/cv/summary-stream
+ */
+const generateProfessionalSummaryStream = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+
+    // Set headers for Server-Sent Events (SSE)
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    try {
+      // Stream the response and get the full result
+      const result = await cvProfileAssistantAgent.generateProfessionalSummaryStream(
+        userId,
+        (chunk) => {
+          // Send each chunk as SSE event
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+        }
+      );
+      
+      // Send the complete structured response
+      res.write(`data: ${JSON.stringify({ 
+        type: 'complete', 
+        data: {
+          summary: result.summary,
+          suggestions: result.suggestions,
+          keywords: result.keywords,
+        }
+      })}\n\n`);
+
+      // Send completion signal
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      res.end();
+    } catch (error) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    res.end();
+    next(error);
+  }
+};
+
+/**
  * Suggest bullet points for experience/project
  * POST /api/ai/cv/bullet-points
  */
@@ -474,6 +590,61 @@ const getLinkedInRecommendations = async (req, res, next) => {
 };
 
 /**
+ * Get LinkedIn and portfolio recommendations with streaming
+ * GET /api/ai/cv/recommendations-stream
+ */
+const getLinkedInRecommendationsStream = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+
+    // Set headers for Server-Sent Events (SSE)
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    try {
+      // Stream the response and get the full result
+      const result = await cvProfileAssistantAgent.getLinkedInRecommendationsStream(
+        userId,
+        (chunk) => {
+          // Send each chunk as SSE event
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+        }
+      );
+      
+      // Send the complete structured response
+      res.write(`data: ${JSON.stringify({ 
+        type: 'complete', 
+        data: {
+          linkedInRecommendations: result.linkedInRecommendations,
+          portfolioRecommendations: result.portfolioRecommendations,
+          generalTips: result.generalTips,
+        }
+      })}\n\n`);
+
+      // Send completion signal
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      res.end();
+    } catch (error) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    res.end();
+    next(error);
+  }
+};
+
+/**
  * Generate CV layout
  * POST /api/ai/cv/generate
  */
@@ -493,6 +664,63 @@ const generateCVLayout = async (req, res, next) => {
   }
 };
 
+/**
+ * Generate CV layout with streaming
+ * POST /api/ai/cv/generate-stream
+ */
+const generateCVLayoutStream = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const options = req.body.options || {};
+
+    // Set headers for Server-Sent Events (SSE)
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    try {
+      // Stream the CV and get the full result
+      // OPTIMIZATION: Send chunks immediately for faster, smoother streaming
+      const result = await cvProfileAssistantAgent.generateCVLayoutStream(
+        userId,
+        options,
+        (chunk) => {
+          // Send each chunk immediately for fastest streaming
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+        }
+      );
+      
+      // Send the complete structured response
+      res.write(`data: ${JSON.stringify({ 
+        type: 'complete', 
+        data: {
+          cvText: result.cvText,
+          generatedAt: result.generatedAt,
+        }
+      })}\n\n`);
+
+      // Send completion signal
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      res.end();
+    } catch (error) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    res.end();
+    next(error);
+  }
+};
+
 module.exports = {
   verifyTools,
   extractCVSkills,
@@ -502,12 +730,16 @@ module.exports = {
   getRoadmap,
   deleteRoadmap,
   chatWithCareerBot,
+  chatWithCareerBotStream,
   uploadCV,
   upload, // Export multer middleware
   initializeChroma,
   generateProfessionalSummary,
+  generateProfessionalSummaryStream,
   suggestBulletPoints,
   getLinkedInRecommendations,
+  getLinkedInRecommendationsStream,
   generateCVLayout,
+  generateCVLayoutStream,
 };
 
