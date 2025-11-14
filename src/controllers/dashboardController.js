@@ -22,9 +22,40 @@ const getDashboard = async (req, res, next) => {
       });
     }
 
-    // Get recommendations
-    const recommendedJobs = await getJobRecommendations(user._id);
-    const recommendedResources = await getResourceRecommendations(user._id);
+    // Get recommendations (will work even if ChromaDB fails)
+    let recommendedJobs = [];
+    let recommendedResources = [];
+    
+    try {
+      recommendedJobs = await getJobRecommendations(user._id);
+      
+      // Ensure all recommendations have matchPercentage
+      recommendedJobs = recommendedJobs.map(rec => {
+        if (rec.matchPercentage === undefined || rec.matchPercentage === null) {
+          // Calculate from matchScore if available
+          if (rec.matchScore !== undefined) {
+            rec.matchPercentage = Math.round(rec.matchScore * 100);
+          } else if (rec.matchedSkills && rec.job?.requiredSkills) {
+            // Fallback calculation
+            const baseScore = rec.matchedSkills.length / rec.job.requiredSkills.length;
+            rec.matchPercentage = Math.round(baseScore * 100);
+          } else {
+            rec.matchPercentage = 0;
+          }
+        }
+        return rec;
+      });
+    } catch (error) {
+      console.error('Error getting job recommendations:', error.message);
+      // Return empty array - graceful degradation
+    }
+    
+    try {
+      recommendedResources = await getResourceRecommendations(user._id);
+    } catch (error) {
+      console.error('Error getting resource recommendations:', error.message);
+      // Return empty array - graceful degradation
+    }
 
     res.status(200).json({
       success: true,

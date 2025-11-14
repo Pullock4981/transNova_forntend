@@ -14,6 +14,7 @@ const resourceRoutes = require('./src/routes/resourceRoutes');
 const recommendationRoutes = require('./src/routes/recommendationRoutes');
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
 const contactRoutes = require('./src/routes/contactRoutes');
+const aiRoutes = require('./src/routes/aiRoutes');
 
 // Initialize Express app
 const app = express();
@@ -40,6 +41,7 @@ app.use('/api/resources', resourceRoutes);
 app.use('/api/recommendations', recommendationRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/ai', aiRoutes);
 
 // 404 handler
 app.use((req, res) => {

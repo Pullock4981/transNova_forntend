@@ -21,10 +21,27 @@ const getRecommendedJobs = async (req, res, next) => {
 
     const recommendations = await getJobRecommendations(user._id);
 
+    // Ensure all recommendations have matchPercentage
+    const recommendationsWithPercentage = recommendations.map(rec => {
+      if (rec.matchPercentage === undefined || rec.matchPercentage === null) {
+        // Calculate from matchScore if available
+        if (rec.matchScore !== undefined) {
+          rec.matchPercentage = Math.round(rec.matchScore * 100);
+        } else if (rec.matchedSkills && rec.job?.requiredSkills) {
+          // Fallback calculation
+          const baseScore = rec.matchedSkills.length / rec.job.requiredSkills.length;
+          rec.matchPercentage = Math.round(baseScore * 100);
+        } else {
+          rec.matchPercentage = 0;
+        }
+      }
+      return rec;
+    });
+
     res.status(200).json({
       success: true,
-      count: recommendations.length,
-      data: recommendations,
+      count: recommendationsWithPercentage.length,
+      data: recommendationsWithPercentage,
     });
   } catch (error) {
     next(error);
