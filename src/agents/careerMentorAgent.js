@@ -3,6 +3,7 @@ const chromaService = require('../services/chromaService');
 const User = require('../models/User');
 const Job = require('../models/Job');
 const Resource = require('../models/Resource');
+const Conversation = require('../models/Conversation');
 
 /**
  * Career Mentor Agent (CareerBot)
@@ -25,81 +26,144 @@ const Resource = require('../models/Resource');
  */
 class CareerMentorAgent {
   constructor() {
-    // OPTIMIZATION: In-memory conversation history storage
+    // OPTIMIZATION: In-memory conversation history cache for performance
     // Key: userId, Value: Array of {role, content, timestamp}
-    this.conversationHistory = new Map();
-    this.MAX_HISTORY_LENGTH = 10; // Keep last 10 messages (5 exchanges)
-    this.HISTORY_TTL = 30 * 60 * 1000; // 30 minutes TTL
-    
-    // Clean old conversations periodically
-    setInterval(() => {
-      this.cleanOldConversations();
-    }, 5 * 60 * 1000); // Every 5 minutes
+    this.conversationCache = new Map();
+    this.MAX_HISTORY_LENGTH = 50; // Keep last 50 messages for AI context (increased from 10)
+    this.CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
   }
 
   /**
-   * Clean old conversation history
+   * Load conversation history from database
+   * @param {String} userId - User ID
+   * @returns {Array} Array of message objects
    */
-  cleanOldConversations() {
-    const now = Date.now();
-    let cleaned = 0;
-    for (const [userId, history] of this.conversationHistory.entries()) {
-      // Remove conversations older than TTL
-      const recentHistory = history.filter(msg => now - msg.timestamp < this.HISTORY_TTL);
-      if (recentHistory.length === 0) {
-        this.conversationHistory.delete(userId);
-        cleaned++;
-      } else if (recentHistory.length < history.length) {
-        this.conversationHistory.set(userId, recentHistory);
-        cleaned++;
+  async loadConversationHistory(userId) {
+    try {
+      // Check cache first
+      if (this.conversationCache.has(userId)) {
+        const cached = this.conversationCache.get(userId);
+        if (Date.now() - cached.timestamp < this.CACHE_TTL) {
+          return cached.messages;
+        }
       }
-    }
-    if (cleaned > 0) {
-      console.log(`🧹 Cleaned ${cleaned} expired conversation histories`);
+
+      // Load from database
+      const conversation = await Conversation.findOne({ userId })
+        .select('messages')
+        .lean();
+
+      const messages = conversation?.messages || [];
+      
+      // Cache the result
+      this.conversationCache.set(userId, {
+        messages,
+        timestamp: Date.now(),
+      });
+
+      return messages;
+    } catch (error) {
+      console.error('Error loading conversation history:', error);
+      return [];
     }
   }
 
   /**
-   * Get conversation history for a user
+   * Get conversation history for a user (synchronous for backward compatibility)
    * @param {String} userId - User ID
    * @returns {Array} Array of message objects
    */
   getConversationHistory(userId) {
-    return this.conversationHistory.get(userId) || [];
+    // Return cached if available, otherwise empty array
+    const cached = this.conversationCache.get(userId);
+    return cached?.messages || [];
   }
 
   /**
-   * Add message to conversation history
+   * Save message to database and update cache
    * @param {String} userId - User ID
    * @param {String} role - 'user' or 'assistant'
    * @param {String} content - Message content
    */
-  addToHistory(userId, role, content) {
-    if (!this.conversationHistory.has(userId)) {
-      this.conversationHistory.set(userId, []);
+  async saveMessage(userId, role, content) {
+    try {
+      // Save to database
+      let conversation = await Conversation.findOne({ userId });
+      
+      if (!conversation) {
+        conversation = new Conversation({ userId, messages: [] });
+      }
+
+      await conversation.addMessage(role, content);
+
+      // Update cache
+      const cached = this.conversationCache.get(userId) || { messages: [] };
+      cached.messages.push({
+        role,
+        content,
+        timestamp: new Date(),
+      });
+
+      // Keep only last MAX_HISTORY_LENGTH messages in cache
+      if (cached.messages.length > this.MAX_HISTORY_LENGTH) {
+        cached.messages = cached.messages.slice(-this.MAX_HISTORY_LENGTH);
+      }
+
+      cached.timestamp = Date.now();
+      this.conversationCache.set(userId, cached);
+
+      return true;
+    } catch (error) {
+      console.error('Error saving message:', error);
+      // Still update cache even if DB save fails
+      const cached = this.conversationCache.get(userId) || { messages: [] };
+      cached.messages.push({
+        role,
+        content,
+        timestamp: new Date(),
+      });
+      if (cached.messages.length > this.MAX_HISTORY_LENGTH) {
+        cached.messages = cached.messages.slice(-this.MAX_HISTORY_LENGTH);
+      }
+      cached.timestamp = Date.now();
+      this.conversationCache.set(userId, cached);
+      return false;
     }
-    
-    const history = this.conversationHistory.get(userId);
-    history.push({
-      role,
-      content,
-      timestamp: Date.now(),
-    });
-    
-    // Keep only last MAX_HISTORY_LENGTH messages
-    if (history.length > this.MAX_HISTORY_LENGTH) {
-      history.shift(); // Remove oldest
-    }
-    
-    this.conversationHistory.set(userId, history);
+  }
+
+  /**
+   * Add message to conversation history (backward compatibility)
+   * @param {String} userId - User ID
+   * @param {String} role - 'user' or 'assistant'
+   * @param {String} content - Message content
+   */
+  async addToHistory(userId, role, content) {
+    await this.saveMessage(userId, role, content);
   }
 
   /**
    * Clear conversation history for a user
    * @param {String} userId - User ID
    */
-  clearHistory(userId) {
-    this.conversationHistory.delete(userId);
+  async clearHistory(userId) {
+    try {
+      await Conversation.deleteOne({ userId });
+      this.conversationCache.delete(userId);
+      return true;
+    } catch (error) {
+      console.error('Error clearing conversation history:', error);
+      this.conversationCache.delete(userId);
+      return false;
+    }
+  }
+
+  /**
+   * Get all messages for a user (for frontend display)
+   * @param {String} userId - User ID
+   * @returns {Array} Array of message objects
+   */
+  async getAllMessages(userId) {
+    return await this.loadConversationHistory(userId);
   }
 
   /**
@@ -218,8 +282,10 @@ class CareerMentorAgent {
         console.error('Error fetching context:', error);
       }
 
-      // OPTIMIZATION: Get conversation history for context
-      const history = this.getConversationHistory(userId);
+      // OPTIMIZATION: Load conversation history from database for context
+      const history = await this.loadConversationHistory(userId);
+      // Use last 20 messages for AI context (to avoid token limits)
+      const recentHistory = history.slice(-20);
       
       // Build system message with context
       const systemMessage = `You are CareerBot, a friendly and helpful AI career mentor for youth seeking employment opportunities aligned with SDG 8 (Decent Work and Economic Growth).
@@ -265,7 +331,7 @@ Guidelines:
       // Build messages array with history
       const messages = [
         { role: 'system', content: systemMessage },
-        ...history.map(msg => ({ role: msg.role, content: msg.content })),
+        ...recentHistory.map(msg => ({ role: msg.role, content: msg.content })),
         { role: 'user', content: userMessage },
       ];
 
@@ -276,9 +342,9 @@ Guidelines:
           maxTokens: 500,
         });
         
-        // Add to conversation history
-        this.addToHistory(userId, 'user', userMessage);
-        this.addToHistory(userId, 'assistant', aiResponse);
+        // Save to conversation history (database)
+        await this.addToHistory(userId, 'user', userMessage);
+        await this.addToHistory(userId, 'assistant', aiResponse);
 
         return {
           response: aiResponse,
@@ -417,8 +483,10 @@ Guidelines:
         // Continue with empty arrays - AI can still respond
       }
 
-      // OPTIMIZATION: Get conversation history for context
-      const history = this.getConversationHistory(userId);
+      // OPTIMIZATION: Load conversation history from database for context
+      const history = await this.loadConversationHistory(userId);
+      // Use last 20 messages for AI context (to avoid token limits)
+      const recentHistory = history.slice(-20);
       
       // OPTIMIZATION: Concise system message for faster AI processing
       const skillsList = userContext.skills.slice(0, 8).join(', ') || 'None';
@@ -446,7 +514,7 @@ Guidelines:
       // Build messages array with history
       const messages = [
         { role: 'system', content: systemMessage },
-        ...history.map(msg => ({ role: msg.role, content: msg.content })),
+        ...recentHistory.map(msg => ({ role: msg.role, content: msg.content })),
         { role: 'user', content: userMessage },
       ];
 
@@ -457,9 +525,9 @@ Guidelines:
           maxTokens: 350, // OPTIMIZATION: Reduced from 500 to 350 for faster generation
         }, onChunk);
         
-        // Add to conversation history after streaming completes
-        this.addToHistory(userId, 'user', userMessage);
-        this.addToHistory(userId, 'assistant', fullResponse);
+        // Save to conversation history (database) after streaming completes
+        await this.addToHistory(userId, 'user', userMessage);
+        await this.addToHistory(userId, 'assistant', fullResponse);
 
         return {
           response: fullResponse,

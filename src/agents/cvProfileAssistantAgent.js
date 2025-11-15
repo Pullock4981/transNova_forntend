@@ -1005,11 +1005,24 @@ CRITICAL REQUIREMENTS:
     await streamChunk('═'.repeat(70) + '\n');
     await streamChunk('\n');
 
-    // Contact Information - Stream immediately
+    // Contact Information - Stream immediately (only include fields that exist)
     const contactInfo = [];
-    if (user.email) contactInfo.push(`Email: ${user.email}`);
-    if (user.phone) contactInfo.push(`Phone: ${user.phone}`);
-    if (user.preferredTrack) contactInfo.push(`Specialization: ${user.preferredTrack}`);
+    if (user.email && user.email.trim()) contactInfo.push(`Email: ${user.email}`);
+    if (user.phone && user.phone.trim()) contactInfo.push(`Phone: ${user.phone}`);
+    
+    // Address fields (only include if they exist and have values)
+    const addressParts = [];
+    if (user.address && user.address.trim()) addressParts.push(user.address.trim());
+    if (user.city && user.city.trim()) addressParts.push(user.city.trim());
+    if (user.state && user.state.trim()) addressParts.push(user.state.trim());
+    if (user.zip && user.zip.trim()) addressParts.push(user.zip.trim());
+    if (addressParts.length > 0) {
+      contactInfo.push(`Address: ${addressParts.join(', ')}`);
+    }
+    
+    if (user.preferredTrack && user.preferredTrack.trim()) {
+      contactInfo.push(`Specialization: ${user.preferredTrack}`);
+    }
     
     if (contactInfo.length > 0) {
       const contactLine = contactInfo.join('  |  ');
@@ -1257,11 +1270,24 @@ CRITICAL REQUIREMENTS:
     cvLines.push('═'.repeat(70));
     cvLines.push('');
 
-    // Contact Information - Centered and Professional
+    // Contact Information - Centered and Professional (only include fields that exist)
     const contactInfo = [];
-    if (user.email) contactInfo.push(`Email: ${user.email}`);
-    if (user.phone) contactInfo.push(`Phone: ${user.phone}`);
-    if (user.preferredTrack) contactInfo.push(`Specialization: ${user.preferredTrack}`);
+    if (user.email && user.email.trim()) contactInfo.push(`Email: ${user.email}`);
+    if (user.phone && user.phone.trim()) contactInfo.push(`Phone: ${user.phone}`);
+    
+    // Address fields (only include if they exist and have values)
+    const addressParts = [];
+    if (user.address && user.address.trim()) addressParts.push(user.address.trim());
+    if (user.city && user.city.trim()) addressParts.push(user.city.trim());
+    if (user.state && user.state.trim()) addressParts.push(user.state.trim());
+    if (user.zip && user.zip.trim()) addressParts.push(user.zip.trim());
+    if (addressParts.length > 0) {
+      contactInfo.push(`Address: ${addressParts.join(', ')}`);
+    }
+    
+    if (user.preferredTrack && user.preferredTrack.trim()) {
+      contactInfo.push(`Specialization: ${user.preferredTrack}`);
+    }
     
     if (contactInfo.length > 0) {
       // Center contact info

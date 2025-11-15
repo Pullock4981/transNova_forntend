@@ -360,6 +360,50 @@ const chatWithCareerBot = async (req, res, next) => {
 };
 
 /**
+ * Get conversation history for CareerBot
+ * GET /api/ai/chat-history
+ */
+const getChatHistory = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    
+    const messages = await careerMentorAgent.getAllMessages(userId);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        messages: messages.map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp,
+        })),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Clear conversation history for CareerBot
+ * DELETE /api/ai/chat-history
+ */
+const clearChatHistory = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    
+    await careerMentorAgent.clearHistory(userId);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Conversation history cleared',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Chat with CareerBot (Streaming - word-by-word)
  * POST /api/ai/chat-stream
  * Uses Server-Sent Events (SSE) for real-time streaming
@@ -731,6 +775,8 @@ module.exports = {
   deleteRoadmap,
   chatWithCareerBot,
   chatWithCareerBotStream,
+  getChatHistory,
+  clearChatHistory,
   uploadCV,
   upload, // Export multer middleware
   initializeChroma,

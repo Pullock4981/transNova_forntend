@@ -36,6 +36,19 @@ const jobSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    email: {
+      type: String,
+      trim: true,
+    },
+    source: {
+      type: String,
+      default: 'manual',
+      enum: ['manual', 'bdjobs.com', 'other'],
+    },
+    sourceUrl: {
+      type: String,
+      trim: true,
+    },
   },
   {
     timestamps: true,

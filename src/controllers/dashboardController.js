@@ -15,8 +15,9 @@ const getDashboard = async (req, res, next) => {
     // OPTIMIZATION 1: Fetch user with optimized query (single fetch, no duplicates)
     // Use .select() to only fetch needed fields, .lean() for faster queries, specific populate fields
     const user = await User.findById(req.user.userId)
-      .select('_id fullName email educationLevel experienceLevel preferredTrack skills careerInterests savedJobs savedResources')
-      .populate('savedJobs', 'title company location requiredSkills experienceLevel jobType track')
+      .select('_id fullName email educationLevel experienceLevel preferredTrack skills careerInterests savedJobs appliedJobs savedResources')
+      .populate('savedJobs', 'title company location requiredSkills experienceLevel jobType track email')
+      .populate('appliedJobs', 'title company location requiredSkills experienceLevel jobType track email')
       .populate('savedResources', 'title platform type cost relatedSkills description url')
       .lean();
 
@@ -69,6 +70,7 @@ const getDashboard = async (req, res, next) => {
           preferredTrack: user.preferredTrack,
           skills: user.skills,
           careerInterests: user.careerInterests,
+          appliedJobs: user.appliedJobs || [],
         },
         recommendedJobs: {
           count: recommendedJobs.length,
@@ -78,7 +80,8 @@ const getDashboard = async (req, res, next) => {
           count: recommendedResources.length,
           resources: recommendedResources,
         },
-        savedJobs: user.savedJobs,
+        savedJobs: user.savedJobs || [],
+        appliedJobs: user.appliedJobs || [],
         savedResources: user.savedResources,
       },
     });

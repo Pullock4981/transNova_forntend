@@ -12,6 +12,8 @@ const {
   deleteRoadmap,
   chatWithCareerBot,
   chatWithCareerBotStream,
+  getChatHistory,
+  clearChatHistory,
   uploadCV,
   upload,
   initializeChroma,
@@ -56,6 +58,12 @@ router.post('/chat', chatWithCareerBot);
 
 // Chat with CareerBot (Streaming - word-by-word)
 router.post('/chat-stream', chatWithCareerBotStream);
+
+// Get conversation history
+router.get('/chat-history', getChatHistory);
+
+// Clear conversation history
+router.delete('/chat-history', clearChatHistory);
 
 // Initialize ChromaDB (optional, for admin/testing)
 router.post('/init-chroma', initializeChroma);

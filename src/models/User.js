@@ -19,6 +19,11 @@ const userSchema = new mongoose.Schema(
       minlength: 6,
       select: false, // Don't return password in queries by default
     },
+    role: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+    },
     educationLevel: {
       type: String,
       default: '',
@@ -49,6 +54,12 @@ const userSchema = new mongoose.Schema(
       default: '',
     },
     savedJobs: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Job',
+      },
+    ],
+    appliedJobs: [
       {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Job',

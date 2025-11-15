@@ -129,6 +129,15 @@ const login = async (req, res, next) => {
       });
     }
 
+    // Check if admin credentials
+    if (email.toLowerCase() === 'admin@admin.com' && password === 'admin1234') {
+      // Set admin role if not already set
+      if (user.role !== 'admin') {
+        user.role = 'admin';
+        await user.save();
+      }
+    }
+
     // Generate token
     const token = generateToken(user._id);
 
@@ -156,8 +165,10 @@ const login = async (req, res, next) => {
 const getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.userId)
-      .populate('savedJobs')
-      .populate('savedResources');
+      .select('_id fullName email educationLevel experienceLevel preferredTrack skills careerInterests savedJobs appliedJobs savedResources')
+      .populate('savedJobs', 'title company location requiredSkills experienceLevel jobType track')
+      .populate('appliedJobs', '_id')
+      .populate('savedResources', 'title platform type cost relatedSkills description url');
 
     if (!user) {
       return res.status(404).json({

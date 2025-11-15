@@ -6,9 +6,10 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "seed:admin": "node src/seed/admin.js",
     "seed:jobs": "node src/seed/jobs.js",
     "seed:resources": "node src/seed/resources.js",
-    "seed:all": "node src/seed/jobs.js && node src/seed/resources.js",
+    "seed:all": "node src/seed/admin.js && node src/seed/jobs.js && node src/seed/resources.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -29,8 +30,10 @@
     "@google/generative-ai": "^0.1.3",
     "@langchain/core": "^0.1.63",
     "@langchain/google-genai": "^0.0.5",
+    "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",
+    "cheerio": "^1.1.2",
     "chromadb": "^1.10.5",
     "chromadb-default-embed": "^2.14.0",
     "compression": "^1.8.1",
@@ -45,7 +48,8 @@
     "nodemailer": "^7.0.10",
     "openai": "^6.9.0",
     "pdf-lib": "^1.17.1",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "puppeteer": "^24.30.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
