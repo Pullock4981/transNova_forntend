@@ -17,7 +17,6 @@ const {
   getAllUsers,
   getUserById,
   sendSkillRecommendationsToAllUsers,
-  scrapeBdjobsJobs,
 } = require('../controllers/adminController');
 
 // All admin routes require authentication and admin role
@@ -47,9 +46,6 @@ router.get('/users/:id', getUserById);
 
 // Skill Recommendations route
 router.post('/send-skill-recommendations', sendSkillRecommendationsToAllUsers);
-
-// Bdjobs Scraping route
-router.post('/scrape-bdjobs', scrapeBdjobsJobs);
 
 module.exports = router;
 

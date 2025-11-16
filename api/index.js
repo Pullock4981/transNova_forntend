@@ -13,23 +13,26 @@ const connectToDatabase = async () => {
     } catch (error) {
       console.error('❌ MongoDB connection error:', error);
       isConnected = false;
-      throw error;
+      // Don't throw - allow app to continue (connection will retry)
     }
   }
 };
 
+// Initialize connection on cold start
+connectToDatabase().catch(console.error);
+
 // Vercel serverless function handler
 module.exports = async (req, res) => {
   try {
-    // Connect to database on first request
+    // Ensure database connection
     await connectToDatabase();
     
     // Handle the request with Express app
-    app(req, res);
+    return app(req, res);
   } catch (error) {
     console.error('Serverless function error:', error);
     if (!res.headersSent) {
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message: 'Internal server error',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined,

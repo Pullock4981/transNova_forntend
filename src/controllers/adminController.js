@@ -3,7 +3,6 @@ const Job = require('../models/Job');
 const Resource = require('../models/Resource');
 const skillRecommendationAgent = require('../agents/skillRecommendationAgent');
 const emailService = require('../services/emailService');
-const bdjobsScraper = require('../services/bdjobsScraper');
 
 // ============ JOBS MANAGEMENT ============
 
@@ -455,36 +454,6 @@ const sendSkillRecommendationsToAllUsers = async (req, res, next) => {
   }
 };
 
-// ============ BDJOBS SCRAPING ============
-
-const scrapeBdjobsJobs = async (req, res, next) => {
-  try {
-    const { maxJobs = 50 } = req.body;
-
-    console.log(`📥 Admin requested to scrape ${maxJobs} jobs from bdjobs.com`);
-
-    const result = await bdjobsScraper.scrapeAndSave(maxJobs);
-
-    res.status(200).json({
-      success: true,
-      message: result.message || `Scraped and saved ${result.saved} jobs from bdjobs.com`,
-      data: {
-        saved: result.saved,
-        skipped: result.skipped,
-        totalScraped: result.saved + result.skipped,
-        jobs: result.jobs || [],
-      },
-    });
-  } catch (error) {
-    console.error('❌ Error in scrapeBdjobsJobs:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Failed to scrape jobs from bdjobs.com',
-      error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-    });
-  }
-};
-
 module.exports = {
   // Jobs
   getAllJobs,
@@ -505,7 +474,5 @@ module.exports = {
   getUserById,
   // Skill Recommendations
   sendSkillRecommendationsToAllUsers,
-  // Bdjobs Scraping
-  scrapeBdjobsJobs,
 };
 

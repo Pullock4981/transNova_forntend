@@ -1,4 +1,19 @@
 const User = require('../models/User');
+const multer = require('multer');
+
+// Configure multer for image uploads
+const storage = multer.memoryStorage();
+const imageUpload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
+  },
+});
 
 /**
  * Get current user profile
@@ -264,6 +279,87 @@ const saveResource = async (req, res, next) => {
   }
 };
 
+/**
+ * Upload profile photo
+ * POST /users/me/photo
+ */
+const uploadProfilePhoto = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Photo file is required',
+      });
+    }
+
+    const user = await User.findById(req.user.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    // Convert image to base64 data URI for storage
+    const base64Image = req.file.buffer.toString('base64');
+    const dataUri = `data:${req.file.mimetype};base64,${base64Image}`;
+
+    // Save to user profile
+    user.profilePhoto = dataUri;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        profilePhoto: user.profilePhoto,
+        message: 'Profile photo uploaded successfully',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Update profile photo (processed/formal photo)
+ * PUT /users/me/photo
+ */
+const updateProfilePhoto = async (req, res, next) => {
+  try {
+    const { profilePhoto } = req.body;
+
+    if (!profilePhoto) {
+      return res.status(400).json({
+        success: false,
+        message: 'Profile photo data is required',
+      });
+    }
+
+    const user = await User.findById(req.user.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    user.profilePhoto = profilePhoto;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        profilePhoto: user.profilePhoto,
+        message: 'Profile photo updated successfully',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getCurrentUser,
   updateUserProfile,
@@ -272,5 +368,8 @@ module.exports = {
   storeCV,
   saveJob,
   saveResource,
+  uploadProfilePhoto,
+  updateProfilePhoto,
+  imageUpload, // Export multer middleware
 };
 

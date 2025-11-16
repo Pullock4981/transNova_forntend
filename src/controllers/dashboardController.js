@@ -2,6 +2,7 @@ const User = require('../models/User');
 const {
   getJobRecommendations,
   getResourceRecommendations,
+  getLocalJobRecommendations,
 } = require('../services/recommendationService');
 
 /**
@@ -30,13 +31,17 @@ const getDashboard = async (req, res, next) => {
 
     // OPTIMIZATION 2: Parallel fetching of recommendations (much faster than sequential)
     // Pass user object to avoid duplicate database queries
-    const [recommendedJobs, recommendedResources] = await Promise.all([
+    const [recommendedJobs, recommendedResources, localJobs] = await Promise.all([
       getJobRecommendations(user._id, user).catch(err => {
         console.error('Error getting job recommendations:', err.message);
         return [];
       }),
       getResourceRecommendations(user._id, user).catch(err => {
         console.error('Error getting resource recommendations:', err.message);
+        return [];
+      }),
+      getLocalJobRecommendations(user._id, user).catch(err => {
+        console.error('Error getting local job recommendations:', err.message);
         return [];
       }),
     ]);
@@ -79,6 +84,10 @@ const getDashboard = async (req, res, next) => {
         recommendedResources: {
           count: recommendedResources.length,
           resources: recommendedResources,
+        },
+        localJobs: {
+          count: localJobs.length,
+          jobs: localJobs,
         },
         savedJobs: user.savedJobs || [],
         appliedJobs: user.appliedJobs || [],

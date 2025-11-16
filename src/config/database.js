@@ -6,8 +6,19 @@ const mongoose = require('mongoose');
 const connectDB = async () => {
   try {
     if (!process.env.MONGO_URI) {
-      console.error('❌ MONGO_URI is not defined in environment variables');
+      const error = new Error('MONGO_URI is not defined in environment variables');
+      console.error('❌', error.message);
+      // In serverless (Vercel), don't exit process, throw error instead
+      if (process.env.VERCEL) {
+        throw error;
+      }
       process.exit(1);
+    }
+
+    // Check if already connected (for serverless reuse)
+    if (mongoose.connection.readyState === 1) {
+      console.log('✅ MongoDB already connected (reusing connection)');
+      return mongoose.connection;
     }
 
     const conn = await mongoose.connect(process.env.MONGO_URI, {
@@ -18,9 +29,11 @@ const connectDB = async () => {
       connectTimeoutMS: 30000, // 30 seconds connection timeout
       retryWrites: true,
       retryReads: true,
+      maxPoolSize: 10, // Maintain up to 10 socket connections
     });
 
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+    return conn;
   } catch (error) {
     console.error(`❌ Error connecting to MongoDB: ${error.message}`);
     
@@ -43,6 +56,10 @@ const connectDB = async () => {
       console.error('2. Verify cluster is active in MongoDB Atlas');
     }
     
+    // In serverless (Vercel), throw error instead of exiting
+    if (process.env.VERCEL) {
+      throw error;
+    }
     process.exit(1);
   }
 };

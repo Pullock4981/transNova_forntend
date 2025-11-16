@@ -15,7 +15,9 @@ const {
   getChatHistory,
   clearChatHistory,
   uploadCV,
+  processPhotoForCV,
   upload,
+  imageUpload,
   initializeChroma,
   generateProfessionalSummary,
   generateProfessionalSummaryStream,
@@ -37,6 +39,9 @@ router.post('/verify-tools', verifyTools);
 
 // Upload and extract CV from PDF
 router.post('/upload-cv', upload.single('cvFile'), uploadCV);
+
+// Process photo for CV (make it formal)
+router.post('/process-photo', imageUpload.single('photo'), processPhotoForCV);
 
 // Get enhanced job match
 router.get('/job-match/:jobId', validateObjectId('jobId'), getEnhancedJobMatch);

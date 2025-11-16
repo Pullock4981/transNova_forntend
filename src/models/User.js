@@ -53,6 +53,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    profilePhoto: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     savedJobs: [
       {
         type: mongoose.Schema.Types.ObjectId,

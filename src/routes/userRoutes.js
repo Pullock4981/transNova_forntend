@@ -10,6 +10,9 @@ const {
   storeCV,
   saveJob,
   saveResource,
+  uploadProfilePhoto,
+  updateProfilePhoto,
+  imageUpload,
 } = require('../controllers/userController');
 
 // All user routes require authentication
@@ -39,6 +42,12 @@ router.post(
   validateObjectId('resourceId'),
   saveResource
 );
+
+// Upload profile photo
+router.post('/me/photo', imageUpload.single('photo'), uploadProfilePhoto);
+
+// Update profile photo (processed photo)
+router.put('/me/photo', updateProfilePhoto);
 
 module.exports = router;
 

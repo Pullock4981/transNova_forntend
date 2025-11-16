@@ -18,6 +18,8 @@ const careerRoadmapAgent = require('./careerRoadmapAgent');
 const cvProfileAssistantAgent = require('./cvProfileAssistantAgent');
 const cvExtractionAgent = require('./cvExtractionAgent');
 const jobApplicationAgent = require('./jobApplicationAgent');
+const resourceRecommendationAgent = require('./resourceRecommendationAgent');
+const localJobRecommendationAgent = require('./localJobRecommendationAgent');
 
 module.exports = {
   jobMatchPercentageAgent,
@@ -27,5 +29,7 @@ module.exports = {
   cvProfileAssistantAgent,
   cvExtractionAgent,
   jobApplicationAgent,
+  resourceRecommendationAgent,
+  localJobRecommendationAgent,
 };
 

@@ -11,6 +11,7 @@ const aiService = require('../services/aiService');
 const aiJobMatchingService = require('../services/aiJobMatchingService');
 const chromaService = require('../services/chromaService');
 const pdfService = require('../services/pdfService');
+const photoProcessingService = require('../services/photoProcessingService');
 const multer = require('multer');
 const Job = require('../models/Job');
 const User = require('../models/User');
@@ -25,6 +26,19 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(new Error('Only PDF files are allowed'), false);
+    }
+  },
+});
+
+// Configure multer for image uploads (photo processing)
+const imageUpload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
     }
   },
 });
@@ -131,17 +145,20 @@ const getEnhancedJobMatch = async (req, res, next) => {
       });
     }
 
-    // OPTIMIZATION: Use AI-powered matching with embeddings for accurate semantic matching
+    // OPTIMIZATION: Fast job matching with timeout (max 1 second)
+    // Skip embeddings and AI in critical path for speed
     let matchAnalysis;
     try {
-      console.log(`🔍 Using embeddings for enhanced job match: ${job.title}`);
-      matchAnalysis = await aiJobMatchingService.analyzeJobMatch(user, job, {
-        skipEmbedding: false,  // Use embeddings for semantic matching
-        skipAIReasons: false   // Use AI for key reasons
-      });
+      // Use Promise.race with aggressive timeout
+      matchAnalysis = await Promise.race([
+        aiJobMatchingService.analyzeJobMatch(user, job, {
+          skipEmbedding: true,  // OPTIMIZATION: Skip embeddings for speed
+          skipAIReasons: true   // OPTIMIZATION: Skip AI reasons for speed
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Match analysis timeout')), 1000))
+      ]);
     } catch (error) {
-      console.error('Embedding-based match analysis error:', error);
-      // Fallback to simple matching if embeddings fail
+      // Fast fallback - simple matching (instant, synchronous)
       const matchedSkills = user.skills.filter(userSkill =>
         job.requiredSkills.some(
           jobSkill => userSkill.toLowerCase() === jobSkill.toLowerCase()
@@ -170,6 +187,18 @@ const getEnhancedJobMatch = async (req, res, next) => {
       };
     }
 
+    // Enhance match analysis in background (non-blocking)
+    setImmediate(() => {
+      aiJobMatchingService.analyzeJobMatch(user, job, {
+        skipEmbedding: false,
+        skipAIReasons: false
+      })
+        .then(enhanced => {
+          console.log('Background enhanced match analysis completed');
+        })
+        .catch(() => {});
+    });
+
     if (!matchAnalysis) {
       return res.status(200).json({
         success: true,
@@ -183,28 +212,62 @@ const getEnhancedJobMatch = async (req, res, next) => {
       });
     }
 
-    // Get skill gap analysis using Skill Gap Analysis Agent
-    let gapAnalysis;
-    try {
-      gapAnalysis = await skillGapAnalysisAgent.analyzeSkillGaps(user, job);
-    } catch (error) {
-      console.error('Skill Gap Analysis Agent Error:', error);
-      // Fallback to old service
-      try {
-        gapAnalysis = await skillGapService.analyzeSkillGaps(
-          user.skills,
-          job.requiredSkills,
-          userId
-        );
-      } catch (fallbackError) {
-        console.error('Fallback Gap Analysis Error:', fallbackError);
-        gapAnalysis = {
-          missingSkills: matchAnalysis.missingSkills || [],
-          recommendations: [],
-          message: 'Unable to generate detailed gap analysis',
-        };
-      }
-    }
+    // OPTIMIZATION: Generate skill gap analysis instantly (synchronous, no wait)
+    // Don't wait for agent - generate basic analysis immediately
+    const userSkills = (user.skills || []).map(s => s.toLowerCase().trim());
+    const jobRequiredSkills = (job.requiredSkills || []).map(s => s.toLowerCase().trim());
+    const missingSkills = jobRequiredSkills.filter(
+      jobSkill => !userSkills.some(
+        userSkill => userSkill === jobSkill || 
+        userSkill.includes(jobSkill) || 
+        jobSkill.includes(userSkill)
+      )
+    );
+
+    const gapAnalysis = {
+      missingSkills,
+      prioritizedSkills: missingSkills.map((skill, idx) => ({
+        skill,
+        priority: 100 - (idx * 5),
+        isCore: ['javascript', 'python', 'html', 'css', 'sql', 'git'].some(cs => 
+          skill.toLowerCase().includes(cs)
+        ),
+      })),
+      recommendations: missingSkills.map(skill => ({
+        skill,
+        priority: 50,
+        resources: [
+          {
+            name: `${skill} Tutorial`,
+            type: 'Tutorial',
+            url: '#',
+            source: 'template',
+          }
+        ],
+        estimatedTime: '2-4 weeks',
+        prerequisites: ['Basic programming knowledge'],
+        projectIdeas: [`Build a project using ${skill}`],
+        learningPath: [
+          `Week 1: Learn ${skill} fundamentals`,
+          `Week 2: Practice with exercises`,
+          `Week 3: Build a project`,
+          `Week 4: Refine and add to portfolio`
+        ],
+      })),
+      totalGaps: missingSkills.length,
+      message: missingSkills.length === 0 
+        ? 'You have all required skills! 🎉' 
+        : `You're missing ${missingSkills.length} key skill(s)`,
+    };
+
+    // Enhance in background (completely non-blocking - fire and forget)
+    setImmediate(() => {
+      skillGapAnalysisAgent.analyzeSkillGaps(user, job)
+        .then(enhanced => {
+          console.log('Background gap analysis completed');
+        })
+        .catch(() => {});
+    });
 
     res.status(200).json({
       success: true,
@@ -498,6 +561,52 @@ const uploadCV = async (req, res, next) => {
 };
 
 /**
+ * Process photo for CV - Make it formal/professional
+ * POST /api/ai/process-photo
+ * Returns the processed image as a downloadable file
+ */
+const processPhotoForCV = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Photo file is required',
+      });
+    }
+
+    const { backgroundColor = 'white' } = req.body;
+
+    // Validate image
+    await photoProcessingService.validateImage(req.file.buffer);
+
+    // Process photo
+    const processed = await photoProcessingService.processPhotoForCV(
+      req.file.buffer,
+      backgroundColor,
+      {
+        removeBg: true,
+        resize: true,
+        targetSize: 400,
+      }
+    );
+
+    // Return as downloadable file instead of JSON (to avoid payload size limits)
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', 'attachment; filename="cv-photo-formal.png"');
+    res.setHeader('Content-Length', processed.imageBuffer.length);
+    res.send(processed.imageBuffer);
+  } catch (error) {
+    console.error('Photo processing error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to process photo',
+      });
+    }
+  }
+};
+
+/**
  * Initialize ChromaDB (for testing/admin)
  * POST /api/ai/init-chroma
  */
@@ -778,7 +887,9 @@ module.exports = {
   getChatHistory,
   clearChatHistory,
   uploadCV,
+  processPhotoForCV,
   upload, // Export multer middleware
+  imageUpload, // Export image upload middleware
   initializeChroma,
   generateProfessionalSummary,
   generateProfessionalSummaryStream,

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Testing
+tests/
+*.test.js
+*.spec.js
+jest.config.js
+
+# Development files
+.vscode/
+.idea/
+*.log
+*.swp
+*.swo
+*~
+
+# Documentation
+README.md
+document.md
+ENV_SETUP.md
+PART2_IMPLEMENTATION.md
+
+# Seed scripts (not needed in production)
+src/seed/
+
+# Frontend (if in same repo)
+TransNova_Front_End/
+
+# Git
+.git/
+.gitignore
+
