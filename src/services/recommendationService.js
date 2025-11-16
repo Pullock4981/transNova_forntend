@@ -4,7 +4,6 @@ const User = require('../models/User');
 const chromaService = require('./chromaService');
 const aiJobMatchingService = require('./aiJobMatchingService');
 const resourceRecommendationAgent = require('../agents/resourceRecommendationAgent');
-const localJobRecommendationAgent = require('../agents/localJobRecommendationAgent');
 
 /**
  * Generate key reasons for job match
@@ -344,42 +343,8 @@ const getResourceRecommendations = async (userId) => {
   }
 };
 
-/**
- * Get local job recommendations from bdjobs.com
- * Uses localJobRecommendationAgent to filter and match bdjobs.com jobs
- * @param {string} userId - User's MongoDB _id
- * @param {Object} user - User object (optional, for optimization)
- * @returns {Array} Array of recommended local jobs
- */
-const getLocalJobRecommendations = async (userId, user = null) => {
-  try {
-    // Use local job recommendation agent
-    const recommendations = await localJobRecommendationAgent.getLocalJobRecommendations(userId);
-    
-    // Ensure all recommendations have matchPercentage
-    return recommendations.map(rec => {
-      if (rec.matchPercentage === undefined || rec.matchPercentage === null) {
-        if (rec.matchScore !== undefined) {
-          rec.matchPercentage = Math.round(rec.matchScore * 100);
-        } else if (rec.matchedSkills && rec.job?.requiredSkills) {
-          const baseScore = rec.matchedSkills.length / rec.job.requiredSkills.length;
-          rec.matchPercentage = Math.round(baseScore * 100);
-        } else {
-          rec.matchPercentage = 0;
-        }
-      }
-      return rec;
-    });
-  } catch (error) {
-    console.error('Error in getLocalJobRecommendations:', error);
-    // Return empty array instead of throwing - graceful degradation
-    return [];
-  }
-};
-
 module.exports = {
   getJobRecommendations,
   getResourceRecommendations,
-  getLocalJobRecommendations,
 };
 
